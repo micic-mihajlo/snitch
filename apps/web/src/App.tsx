@@ -106,6 +106,12 @@ export default function App() {
     () => edgesForNode(currentSnapshot.graph.edges, selectedNode?.id),
     [currentSnapshot.graph.edges, selectedNode?.id]
   );
+  // True finding count per real node, from the full warning set, so map badges stay accurate
+  // even when the diagram lens keeps only some of a node's warnings.
+  const findingCountsByNode = useMemo(
+    () => buildFindingCounts(rankedWarnings, currentSnapshot.graph),
+    [rankedWarnings, currentSnapshot.graph]
+  );
 
   const changed = live.changed;
   const changedClean = Boolean(changed && changed.git.available && changed.counts.changedFindings === 0);
@@ -224,6 +230,7 @@ export default function App() {
           selectedNodeId={selectedNodeId}
           onSelectNode={(node) => setSelectedNodeId(node.id)}
           cwd={live.cwd}
+          findingCounts={findingCountsByNode}
         />
         <SelectionStrip node={selectedNode} edges={selectedNodeEdges} cwd={live.cwd} />
       </section>
@@ -334,6 +341,32 @@ function affectedNodeId(graph: { nodes: GraphNode[]; edges: GraphEdge[] }, warni
     .filter((node): node is GraphNode => Boolean(node) && node?.kind !== "warning");
 
   return (neighbors.find((node) => node.file) ?? neighbors[0])?.id;
+}
+
+function buildFindingCounts(
+  warnings: SnitchWarning[],
+  graph: { nodes: GraphNode[]; edges: GraphEdge[] }
+): Map<string, { count: number; severity: string }> {
+  const weight: Record<string, number> = { high: 0, medium: 1, low: 2, info: 3 };
+  const counts = new Map<string, { count: number; severity: string }>();
+
+  for (const warning of warnings) {
+    const nodeId = affectedNodeId(graph, warning.id);
+    if (!nodeId) {
+      continue;
+    }
+
+    const current = counts.get(nodeId);
+    if (!current) {
+      counts.set(nodeId, { count: 1, severity: warning.severity });
+    } else {
+      const severity =
+        (weight[warning.severity] ?? 9) < (weight[current.severity] ?? 9) ? warning.severity : current.severity;
+      counts.set(nodeId, { count: current.count + 1, severity });
+    }
+  }
+
+  return counts;
 }
 
 function edgesForNode(edges: GraphEdge[], nodeId: string | undefined): GraphEdge[] {

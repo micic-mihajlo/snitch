@@ -11,11 +11,16 @@ import {
 import { useCallback, useMemo } from "react";
 import type { GraphNode, SnitchGraph } from "@snitch/graph";
 
+export type NodeFindingCount = { count: number; severity: string };
+
 type Props = {
   graph: SnitchGraph;
   selectedNodeId?: string | undefined;
   onSelectNode?: (node: GraphNode) => void;
   cwd?: string | undefined;
+  // Authoritative finding count per real node id, from the full warning set. Keeps badges
+  // accurate even when the diagram lens truncates which warning nodes it carries.
+  findingCounts?: Map<string, NodeFindingCount> | undefined;
 };
 
 // Left-to-right architecture layers: who acts on the left, what they reach on the right.
@@ -113,9 +118,13 @@ function SystemNode({ data }: NodeProps<Node<SystemNodeData>>) {
 
 const nodeTypes = { system: SystemNode };
 
-export function GraphCanvas({ graph, selectedNodeId, onSelectNode, cwd }: Props) {
+export function GraphCanvas({ graph, selectedNodeId, onSelectNode, cwd, findingCounts }: Props) {
   // Split warning nodes out of the rendered graph and fold them into per-node finding badges.
-  const { realNodes, realEdges, findingsByNode } = useMemo(() => collapseWarnings(graph), [graph]);
+  const collapsed = useMemo(() => collapseWarnings(graph), [graph]);
+  const { realNodes, realEdges } = collapsed;
+  // Prefer the authoritative counts from the full warning set; fall back to whatever warning
+  // nodes this (possibly truncated) graph still carries.
+  const badgeCounts = findingCounts && findingCounts.size > 0 ? findingCounts : collapsed.findingsByNode;
 
   // Selection can arrive as a warning id (from the Findings list) or a real node id (from a
   // map click). Resolve either to the real node we actually draw, so highlighting is stable.
@@ -126,8 +135,8 @@ export function GraphCanvas({ graph, selectedNodeId, onSelectNode, cwd }: Props)
   const neighborhood = useMemo(() => relatedNodeIds(realEdges, activeId), [realEdges, activeId]);
 
   const nodes = useMemo<Node<SystemNodeData>[]>(
-    () => layoutNodes(realNodes, findingsByNode, neighborhood, activeId, cwd),
-    [realNodes, findingsByNode, neighborhood, activeId, cwd]
+    () => layoutNodes(realNodes, badgeCounts, neighborhood, activeId, cwd),
+    [realNodes, badgeCounts, neighborhood, activeId, cwd]
   );
 
   const edges = useMemo<Edge[]>(
@@ -149,6 +158,9 @@ export function GraphCanvas({ graph, selectedNodeId, onSelectNode, cwd }: Props)
   );
 
   const nodeById = useMemo(() => new Map(realNodes.map((node) => [node.id, node])), [realNodes]);
+  // Re-fit only when the set of drawn nodes actually changes (not on every live poll), so a
+  // diagram that grows from one node to a few re-centers instead of leaving them off-frame.
+  const fitKey = useMemo(() => realNodes.map((node) => node.id).sort().join("|"), [realNodes]);
 
   const handleNodeClick = useCallback(
     (_event: unknown, node: Node) => {
@@ -163,11 +175,12 @@ export function GraphCanvas({ graph, selectedNodeId, onSelectNode, cwd }: Props)
   return (
     <div className="graph-frame" data-testid="graph-frame">
       <ReactFlow
+        key={fitKey}
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
         fitView
-        fitViewOptions={{ padding: 0.18 }}
+        fitViewOptions={{ padding: 0.2, maxZoom: 1.15 }}
         minZoom={0.3}
         maxZoom={1.8}
         nodesDraggable={false}
