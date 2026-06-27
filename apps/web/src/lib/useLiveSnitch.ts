@@ -30,7 +30,6 @@ type LiveApiState = {
     narration: string;
     cerebras: {
       status: string;
-      triageStatus?: string;
       model?: string;
     };
     backboard: {

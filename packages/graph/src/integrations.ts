@@ -436,33 +436,49 @@ export function createFallbackDiagram(graph: SnitchGraph, warnings: SnitchWarnin
   summary: string;
 } {
   const warningIds = new Set(warnings.map((warning) => warning.id));
-  const seedNodeIds = new Set<string>();
+  const selected = new Set<string>();
+  const actorIds = new Set<string>();
 
+  // 1. The findings themselves, kept so a collapsed map can still badge their actor.
   for (const node of graph.nodes) {
     if (node.kind === "warning" && warningIds.has(node.id)) {
-      seedNodeIds.add(node.id);
+      selected.add(node.id);
     }
   }
 
+  // 2. The actors the findings sit on (the flagged tools / routes).
   for (const edge of graph.edges) {
-    if (seedNodeIds.has(edge.from)) {
-      seedNodeIds.add(edge.to);
+    if (selected.has(edge.from) && !warningIds.has(edge.to)) {
+      actorIds.add(edge.to);
     }
-    if (seedNodeIds.has(edge.to)) {
-      seedNodeIds.add(edge.from);
+    if (selected.has(edge.to) && !warningIds.has(edge.from)) {
+      actorIds.add(edge.from);
+    }
+  }
+  for (const id of actorIds) {
+    selected.add(id);
+  }
+
+  // 3. The real architecture each actor reaches — external systems, secrets, services —
+  //    so the map shows WHY it is flagged instead of a single lonely node.
+  for (const edge of graph.edges) {
+    if (actorIds.has(edge.from)) {
+      selected.add(edge.to);
+    }
+    if (actorIds.has(edge.to)) {
+      selected.add(edge.from);
     }
   }
 
-  const selectedIds = seedNodeIds.size > 0
-    ? seedNodeIds
-    : fallbackImportantNodeIds(graph);
+  const selectedIds = selected.size > 0 ? selected : fallbackImportantNodeIds(graph);
   const nodes = graph.nodes
     .filter((node) => selectedIds.has(node.id))
-    .slice(0, 8);
+    .sort((left, right) => diagramNodePriority(left, actorIds) - diagramNodePriority(right, actorIds))
+    .slice(0, 12);
   const nodeIds = new Set(nodes.map((node) => node.id));
   const edges = graph.edges
     .filter((edge) => nodeIds.has(edge.from) && nodeIds.has(edge.to))
-    .slice(0, 12);
+    .slice(0, 16);
 
   const scopedGraph: SnitchGraph = {
     id: `${graph.id}:diagram`,
@@ -485,6 +501,16 @@ export function createFallbackDiagram(graph: SnitchGraph, warnings: SnitchWarnin
         : "Changed files have no active Snitch findings; showing the most connected services and tools.",
     graph: scopedGraph
   };
+}
+
+// Keep the flagged actor and its real architecture neighbors when capping the diagram;
+// warning nodes collapse into badges in the UI, so they are the first to drop if truncated.
+function diagramNodePriority(node: GraphNode, actorIds: Set<string>): number {
+  if (actorIds.has(node.id)) {
+    return 0;
+  }
+
+  return node.kind === "warning" ? 2 : 1;
 }
 
 function fallbackImportantNodeIds(graph: SnitchGraph): Set<string> {

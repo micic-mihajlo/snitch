@@ -1569,8 +1569,7 @@ describe("snitch cli", () => {
     expect(state.insights).toMatchObject({
       generatedAt: "2026-06-27T12:04:00.000Z",
       cerebras: {
-        status: "disabled",
-        triageStatus: "disabled"
+        status: "disabled"
       },
       backboard: {
         status: "disabled"
@@ -1612,7 +1611,6 @@ describe("snitch cli", () => {
     expect(result.stdout).toContain("Snitch insights artifact written");
     expect(result.stdout).toContain("Ranked warnings: 4");
     expect(state.insights?.cerebras.status).toBe("disabled");
-    expect(state.insights?.cerebras.triageStatus).toBe("disabled");
     expect(state.insights?.backboard.status).toBe("disabled");
     expect(state.insights?.rankedWarnings).toHaveLength(4);
     expect(state.insights?.rankedWarnings[0]?.warningId).toBe(

@@ -10,78 +10,60 @@ describe("Snitch dashboard", () => {
     vi.unstubAllGlobals();
   });
 
-  it("renders the live tool surface, warning rail, artifact panel, and integration panel", () => {
+  it("renders the core daily-driver surface in offline preview", () => {
     render(<App />);
 
     expect(screen.getByRole("heading", { name: "Snitch" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Replay next/i })).toBeInTheDocument();
-    expect(screen.getByText("Cerebras Diagram")).toBeInTheDocument();
-    expect(screen.getByText("Warning Rail")).toBeInTheDocument();
-    expect(screen.getByText("PR Artifact")).toBeInTheDocument();
-    expect(screen.getByText("Cerebras")).toBeInTheDocument();
-    expect(screen.getByText("Backboard")).toBeInTheDocument();
-    expect(screen.getByText("static fallback")).toBeInTheDocument();
-    expect(screen.getByText("not connected / 0 repo rules")).toBeInTheDocument();
-    expect(screen.getByText("Create issue tool")).toBeInTheDocument();
+    expect(screen.getByText("Offline preview")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Review summary" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Next action" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Changed files" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "System map" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Findings" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "PR comment" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "How Snitch works" })).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /No audit trail for external tool calls/i })
     ).toBeInTheDocument();
   });
 
-  it("shows a repair prompt when a warning is clicked", async () => {
-    const user = userEvent.setup();
-    render(<App />);
-
-    await user.click(screen.getByRole("button", { name: /No audit trail for external tool calls/i }));
-
-    expect(
-      within(screen.getByRole("region", { name: "Selected repair prompt" })).getByText(
-        /Add an audit log write around create_issue calls/i
-      )
-    ).toBeInTheDocument();
-    expect(screen.getByLabelText("Selected graph node")).toHaveTextContent(
-      "No audit trail for external tool calls"
-    );
-  });
-
-  it("keeps warning rail selection and graph focus together", async () => {
+  it("makes selecting a finding drive the next action and graph focus", async () => {
     const user = userEvent.setup();
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: /No per-session permission boundary/i }));
 
-    expect(screen.getByLabelText("Selected graph node")).toHaveTextContent(
+    expect(screen.getByRole("region", { name: "Next action" })).toHaveTextContent(
       "No per-session permission boundary"
     );
+    // Selecting a finding focuses the real code node it sits on, not a floating warning box.
+    expect(screen.getByLabelText("Selected graph node")).toHaveTextContent("Create issue tool");
   });
 
-  it("advances replay without blanking the graph", async () => {
+  it("shows the repair prompt for the selected finding in the next action card", async () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: /Replay next/i }));
+    await user.click(screen.getByRole("button", { name: /No audit trail for external tool calls/i }));
 
-    expect(screen.getByText("Cerebras Diagram")).toBeInTheDocument();
-    expect(screen.getByText("Create issue tool")).toBeInTheDocument();
-  });
-
-  it("can scope the graph to the selected warning impact", async () => {
-    const user = userEvent.setup();
-    render(<App />);
-
-    expect(screen.getByText("Cerebras Diagram")).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Impact" }));
-
-    expect(screen.getByText("Live System Map")).toBeInTheDocument();
-    expect(screen.getByText(/6\/10 nodes/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Impact" })).toHaveAttribute(
-      "aria-pressed",
-      "true"
+    expect(screen.getByRole("region", { name: "Next action" })).toHaveTextContent(
+      /Add an audit log write around create_issue calls/i
     );
   });
 
-  it("switches from replay fallback to live Snitch artifacts", async () => {
+  it("switches map lenses and reports node coverage", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Full" }));
+    expect(screen.getByText(/10\/10 nodes/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Full" })).toHaveAttribute("aria-pressed", "true");
+
+    await user.click(screen.getByRole("button", { name: "Impact" }));
+    expect(screen.getByText(/6\/10 nodes/i)).toBeInTheDocument();
+  });
+
+  it("connects to a live Snitch session and shows the change review surface", async () => {
     const replay = getDemoReplay();
     const snapshot = withToolAnchor(getReviewSnapshot(replay));
     const artifacts = buildSnitchArtifacts({
@@ -112,11 +94,7 @@ describe("Snitch dashboard", () => {
           warnings: snapshot.warnings,
           changed: {
             target: "apps/demo-app",
-            git: {
-              available: true,
-              baseRef: "origin/main",
-              diffMode: "base"
-            },
+            git: { available: true, baseRef: "origin/main", diffMode: "base" },
             changedFiles: [
               {
                 path: "apps/demo-app/src/tools/create-issue.ts",
@@ -124,11 +102,7 @@ describe("Snitch dashboard", () => {
                 targetPath: "src/tools/create-issue.ts",
                 inAnalysisTarget: true
               },
-              {
-                path: "README.md",
-                status: "M",
-                inAnalysisTarget: false
-              }
+              { path: "README.md", status: "M", inAnalysisTarget: false }
             ],
             changedFindings: [
               {
@@ -165,11 +139,7 @@ describe("Snitch dashboard", () => {
           insights: {
             generatedAt: "2026-06-27T12:00:00.000Z",
             narration: "Cerebras says the issue tool added an external API path.",
-            cerebras: {
-              status: "ok",
-              triageStatus: "ok",
-              model: "glm-5.1"
-            },
+            cerebras: { status: "ok", triageStatus: "ok", model: "glm-5.1" },
             backboard: {
               status: "ok",
               rules: ["External tools require audit logs.", "Secrets must be redacted."]
@@ -193,10 +163,7 @@ describe("Snitch dashboard", () => {
           },
           memory: {
             generatedAt: "2026-06-27T12:05:00.000Z",
-            backboard: {
-              status: "ok",
-              rememberedWarnings: 2
-            }
+            backboard: { status: "ok", rememberedWarnings: 2 }
           }
         })
       }))
@@ -204,35 +171,24 @@ describe("Snitch dashboard", () => {
 
     render(<App />);
 
-    expect(await screen.findByText("live typescript / 2 events")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Replay next/i })).toBeDisabled();
-    const topRankedWarning = within(
-      screen.getByRole("complementary", { name: "Warning Rail" })
-    ).getByRole("button", {
-      name: /#1 critical.*No per-session permission boundary/i
-    });
-    expect(topRankedWarning).toBeInTheDocument();
-    await userEvent.click(topRankedWarning);
-    expect(screen.getByText("Provider write is exposed without a scoped grant.")).toBeInTheDocument();
-    expect(
-      within(screen.getByRole("region", { name: "Selected repair prompt" })).getByText(
-        "Gate create_issue behind a session-scoped permission check."
-      )
-    ).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "Daily Brief" })).toHaveTextContent(
-      "2 changed / 1 flagged"
-    );
-    expect(screen.getByRole("region", { name: "Daily Brief" })).toHaveTextContent("vs origin/main");
+    expect(await screen.findByText("Live · typescript · 2 events")).toBeInTheDocument();
+
     expect(screen.getByRole("region", { name: "Changed files" })).toHaveTextContent(
       "apps/demo-app/src/tools/create-issue.ts"
     );
-    expect(screen.getByText("Cerebras Diagram")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Changed files" })).toHaveTextContent("vs origin/main");
     expect(screen.getByText("ok · glm-5.1 · 10 nodes")).toBeInTheDocument();
     expect(screen.getAllByText("Cerebras selected the issue-tool path for review.").length).toBeGreaterThan(0);
-    expect(screen.getByText("ok · glm-5.1")).toBeInTheDocument();
-    expect(screen.getByText("ok / 2 repo rules")).toBeInTheDocument();
-    expect(screen.getByText(/memory: ok \/ 2 memories/)).toBeInTheDocument();
-    expect(screen.getAllByText(/Cerebras says the issue tool/i).length).toBeGreaterThan(0);
+
+    const topFinding = within(screen.getByRole("region", { name: "Findings" })).getByRole("button", {
+      name: /No per-session permission boundary/i
+    });
+    expect(topFinding).toHaveTextContent("#1");
+    await userEvent.click(topFinding);
+
+    const nextAction = screen.getByRole("region", { name: "Next action" });
+    expect(nextAction).toHaveTextContent("Provider write is exposed without a scoped grant.");
+    expect(nextAction).toHaveTextContent("Gate create_issue behind a session-scoped permission check.");
 
     fireEvent.click(within(screen.getByTestId("graph-frame")).getByText("Create issue tool"));
     const selectedNode = screen.getByLabelText("Selected graph node");
@@ -242,7 +198,26 @@ describe("Snitch dashboard", () => {
     ).toHaveAttribute("href", "vscode://file//tmp/snitch-live/src/assistant/tools.ts:42");
   });
 
-  it("keeps action panels readable when a warning lacks a repair prompt", async () => {
+  it("calls the diff clean when there are no findings on changed files", async () => {
+    const replay = getDemoReplay();
+    const snapshot = getReviewSnapshot(replay);
+
+    window.history.replaceState(null, "", "/?snitchLive=http://127.0.0.1:4767");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => cleanLiveState(snapshot)
+      }))
+    );
+
+    render(<App />);
+
+    const nextAction = await screen.findByRole("region", { name: "Next action" });
+    expect(nextAction).toHaveTextContent("No findings on the changed files");
+  });
+
+  it("falls back to the warning message when a finding has no repair prompt", async () => {
     const replay = getDemoReplay();
     const snapshot = withoutWarningRepairPrompts(getReviewSnapshot(replay));
     const firstWarning = snapshot.warnings[0];
@@ -262,15 +237,12 @@ describe("Snitch dashboard", () => {
 
     render(<App />);
 
-    expect(await screen.findByRole("region", { name: "Daily Brief" })).toHaveTextContent(
-      firstWarning.message
-    );
-    expect(screen.getByRole("region", { name: "Selected repair prompt" })).toHaveTextContent(
+    expect(await screen.findByRole("region", { name: "Next action" })).toHaveTextContent(
       firstWarning.message
     );
   });
 
-  it("updates live Snitch artifacts from server-sent state events", async () => {
+  it("updates live Snitch state from server-sent events", async () => {
     const replay = getDemoReplay();
     const initialSnapshot = replay[0];
     const reviewSnapshot = getReviewSnapshot(replay);
@@ -316,24 +288,18 @@ describe("Snitch dashboard", () => {
 
     render(<App />);
 
-    expect(await screen.findByText("live typescript / 1 events")).toBeInTheDocument();
+    expect(await screen.findByText("Live · typescript · 1 events")).toBeInTheDocument();
     expect(MockEventSource.instances[0]?.url).toBe("http://127.0.0.1:4767/api/events");
 
     act(() => {
       MockEventSource.instances[0]?.emit("state", liveApiStateFor(reviewSnapshot, 2));
     });
 
-    expect(await screen.findByText("live typescript / 2 events")).toBeInTheDocument();
+    expect(await screen.findByText("Live · typescript · 2 events")).toBeInTheDocument();
     expect(screen.getByText("ok · glm-5.1 · 10 nodes")).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /No audit trail for external tool calls/i })
     ).toBeInTheDocument();
-
-    act(() => {
-      MockEventSource.instances[0]?.emit("state", liveApiStateFor(reviewSnapshot, 2));
-    });
-
-    expect(screen.getByText("ok · glm-5.1 · 10 nodes")).toBeInTheDocument();
   });
 });
 
@@ -368,15 +334,8 @@ function liveApiStateFor(snapshot: ReplaySnapshot, eventCount: number) {
       graph: snapshot.graph
     },
     changed: {
-      ok: true,
-      cwd: "/tmp/snitch-live",
-      generatedAt: "2026-06-27T12:00:00.000Z",
       target: "apps/demo-app",
-      git: {
-        available: true,
-        baseRef: "origin/main",
-        diffMode: "base"
-      },
+      git: { available: true, baseRef: "origin/main", diffMode: "base" },
       changedFiles: [
         {
           path: "apps/demo-app/src/tools/create-issue.ts",
@@ -384,11 +343,7 @@ function liveApiStateFor(snapshot: ReplaySnapshot, eventCount: number) {
           targetPath: "src/tools/create-issue.ts",
           inAnalysisTarget: true
         },
-        {
-          path: "README.md",
-          status: "M",
-          inAnalysisTarget: false
-        }
+        { path: "README.md", status: "M", inAnalysisTarget: false }
       ],
       changedFindings: [
         {
@@ -413,6 +368,24 @@ function liveApiStateFor(snapshot: ReplaySnapshot, eventCount: number) {
       prComment: artifacts["pr-comment.md"],
       handoff: artifacts["handoff.md"],
       timeline: artifacts["timeline.jsonl"]
+    }
+  };
+}
+
+function cleanLiveState(snapshot: ReplaySnapshot) {
+  const base = liveApiStateFor(snapshot, 1);
+  return {
+    ...base,
+    changed: {
+      ...base.changed,
+      changedFiles: [{ path: "README.md", status: "M", inAnalysisTarget: false }],
+      changedFindings: [],
+      counts: {
+        changedFiles: 1,
+        targetChangedFiles: 0,
+        activeFindings: snapshot.warnings.length,
+        changedFindings: 0
+      }
     }
   };
 }

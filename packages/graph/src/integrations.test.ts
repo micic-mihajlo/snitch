@@ -3,6 +3,7 @@ import {
   createCerebrasNarrationInput,
   createCerebrasDiagramInput,
   createCerebrasWarningTriageInput,
+  createFallbackDiagram,
   createFallbackWarningRankings,
   createStaticNarration,
   diagramWithCerebras,
@@ -21,6 +22,20 @@ const reviewSnapshot = getReviewSnapshot(replay);
 const diff = diffGraph(previous.graph, reviewSnapshot.graph);
 
 describe("Cerebras integration", () => {
+  it("expands the fallback diagram to the flagged actor's architecture, not just its warnings", () => {
+    const { graph: diagram } = createFallbackDiagram(reviewSnapshot.graph, reviewSnapshot.warnings);
+    const realNodes = diagram.nodes.filter((node) => node.kind !== "warning");
+
+    // The actor itself plus the real systems it reaches must be present, so the map reads as
+    // a diagram instead of a single node ringed by collapsed warning badges.
+    expect(realNodes.some((node) => node.kind === "tool" || node.kind === "endpoint")).toBe(true);
+    expect(realNodes.some((node) => node.kind === "external" || node.kind === "env" || node.kind === "service")).toBe(
+      true
+    );
+    // At least one real architecture edge, not only missing -> warning edges.
+    expect(diagram.edges.some((edge) => edge.kind !== "missing")).toBe(true);
+  });
+
   it("builds compact narration input from task, diff, warnings, and repo rules", () => {
     const input = createCerebrasNarrationInput({
       task: "Add the external issue-creation tool.",

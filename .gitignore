@@ -11,3 +11,9 @@ coverage/
 .cursor/rules/snitch.mdc
 .claude/settings.local.json
 .opencode/plugins/snitch.ts
+
+# tooling / demo artifacts (not product code)
+.agents/
+.claude/
+skills-lock.json
+demo/video/

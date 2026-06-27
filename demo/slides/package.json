@@ -1,0 +1,19 @@
+{
+  "name": "snitch-slides",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5300",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 5300"
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^5.1.2",
+    "vite": "^7.3.6"
+  }
+}
