@@ -7,3 +7,7 @@ node_modules/
 dist/
 coverage/
 .snitch/
+.codex/hooks.json
+.cursor/rules/snitch.mdc
+.claude/settings.local.json
+.opencode/snitch-plugin.ts

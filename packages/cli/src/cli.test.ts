@@ -308,6 +308,67 @@ describe("snitch cli", () => {
     expect(JSON.stringify(parsed)).not.toContain("private-status-secret");
   });
 
+  it("reports Snitch setup readiness for coding agents", async () => {
+    const cwd = await tempRepo();
+
+    await mkdir(join(cwd, ".git/hooks"), { recursive: true });
+    await runCli(["init", "--agent", "all", "--target", demoRoot, "--task", "Wire an issue tool"], {
+      cwd,
+      now
+    });
+
+    const initial = await runCli(["doctor", "--json"], { cwd });
+    const initialPayload = JSON.parse(initial.stdout);
+    const initialHookCheck = initialPayload.checks.find(
+      (check: { id: string }) => check.id === "git-hooks"
+    );
+
+    expect(initial.code).toBe(0);
+    expect(initialPayload.ready).toBe(true);
+    expect(initialPayload.summary.fail).toBe(0);
+    expect(initialPayload.config.generatedConfigs).toEqual([
+      ".codex/hooks.json",
+      ".cursor/rules/snitch.mdc",
+      ".claude/settings.local.json",
+      ".opencode/snitch-plugin.ts"
+    ]);
+    expect(initialPayload.checks).toContainEqual(
+      expect.objectContaining({
+        id: "hook-adapter",
+        status: "pass",
+        path: ".snitch/hooks/codex-hook.mjs"
+      })
+    );
+    expect(initialPayload.checks).toContainEqual(
+      expect.objectContaining({
+        id: "agent-configs",
+        status: "pass"
+      })
+    );
+    expect(initialPayload.checks).toContainEqual(
+      expect.objectContaining({
+        id: "providers",
+        status: "pass"
+      })
+    );
+    expect(initialHookCheck).toMatchObject({
+      status: "warn",
+      nextCommand: "pnpm snitch install-git-hooks"
+    });
+    expect(JSON.stringify(initialPayload)).not.toContain("CEREBRAS_API_KEY");
+    expect(initialPayload.nextCommands).toContain("pnpm snitch status --json");
+    expect(initialPayload.nextCommands).toContain("pnpm snitch changed --json");
+
+    await runCli(["install-git-hooks"], { cwd, now });
+
+    const afterHooks = await runCli(["doctor"], { cwd });
+
+    expect(afterHooks.code).toBe(0);
+    expect(afterHooks.stdout).toContain("Snitch doctor");
+    expect(afterHooks.stdout).toContain("Ready: yes");
+    expect(afterHooks.stdout).toContain("[pass] Local Git hooks");
+  });
+
   it("prints a scoped warning impact for coding-agent follow-up", async () => {
     const cwd = await tempRepo();
 
@@ -537,6 +598,15 @@ describe("snitch cli", () => {
       id: 3,
       method: "ping"
     });
+    const doctor = await handleMcpJsonRpcMessage(cwd, {
+      jsonrpc: "2.0",
+      id: 11,
+      method: "tools/call",
+      params: {
+        name: "snitch_doctor",
+        arguments: {}
+      }
+    });
     const check = await handleMcpJsonRpcMessage(cwd, {
       jsonrpc: "2.0",
       id: 4,
@@ -614,6 +684,21 @@ describe("snitch cli", () => {
     };
     const toolsResult = tools as { result: { tools: Array<{ name: string }> } };
     const pingResult = ping as { result: Record<string, never> };
+    const doctorResult = doctor as {
+      result: {
+        isError?: boolean;
+        structuredContent: {
+          ready: boolean;
+          summary: {
+            fail: number;
+          };
+          checks: Array<{
+            id: string;
+            status: string;
+          }>;
+        };
+      };
+    };
     const checkResult = check as {
       result: {
         isError?: boolean;
@@ -699,6 +784,7 @@ describe("snitch cli", () => {
     expect(pingResult.result).toEqual({});
     expect(toolsResult.result.tools.map((tool) => tool.name)).toEqual([
       "snitch_status",
+      "snitch_doctor",
       "snitch_check",
       "snitch_findings",
       "snitch_next_action",
@@ -707,6 +793,15 @@ describe("snitch cli", () => {
       "snitch_impact",
       "snitch_repair_prompt"
     ]);
+    expect(doctorResult.result.isError).toBe(false);
+    expect(doctorResult.result.structuredContent.ready).toBe(false);
+    expect(doctorResult.result.structuredContent.summary.fail).toBeGreaterThan(0);
+    expect(doctorResult.result.structuredContent.checks).toContainEqual(
+      expect.objectContaining({
+        id: "hook-adapter",
+        status: "fail"
+      })
+    );
     expect(checkResult.result.isError).toBe(true);
     expect(checkResult.result.structuredContent.ok).toBe(false);
     expect(checkResult.result.structuredContent.failOn).toBe("medium");

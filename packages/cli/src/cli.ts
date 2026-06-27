@@ -295,6 +295,41 @@ type SnitchChangedPayload = {
   nextCommands: string[];
 };
 
+type DoctorStatus = "pass" | "warn" | "fail";
+
+type DoctorCheck = {
+  id: string;
+  label: string;
+  status: DoctorStatus;
+  detail: string;
+  path?: string;
+  nextCommand?: string;
+};
+
+type SnitchDoctorPayload = {
+  ok: true;
+  cwd: string;
+  generatedAt: string;
+  ready: boolean;
+  summary: Record<DoctorStatus, number>;
+  session?: {
+    runId: string;
+    status: SnitchSession["status"];
+    task: string;
+    analysisTarget: string;
+    graphSource: GraphSource;
+    eventCount: number;
+  };
+  config?: {
+    agents: AgentTarget[];
+    generatedConfigs: string[];
+    hookAdapter: string;
+    analysisTarget: string;
+  };
+  checks: DoctorCheck[];
+  nextCommands: string[];
+};
+
 type SnitchImpactPayload = {
   ok: true;
   cwd: string;
@@ -475,6 +510,10 @@ export async function runCli(args: string[], options: RunCliOptions = {}): Promi
       }
 
       return ok(await readSnitchStatus(cwd));
+    }
+
+    if (command === "doctor") {
+      return ok(await readSnitchDoctor(cwd, parsed.flags));
     }
 
     if (command === "impact") {
@@ -1068,6 +1107,7 @@ function createStatusNextCommands(
   warnings: SnitchWarning[]
 ): string[] {
   const commands = [
+    "pnpm snitch doctor --json",
     "pnpm snitch changed --json",
     "pnpm snitch next-action --json",
     `pnpm snitch check --target ${shellArgForPrompt(session.analysisTarget)} --fail-on medium --json`
@@ -1082,6 +1122,493 @@ function createStatusNextCommands(
   commands.push("pnpm snitch finalize");
 
   return commands;
+}
+
+async function readSnitchDoctor(cwd: string, flags: ParsedArgs["flags"]): Promise<string> {
+  const payload = await readSnitchDoctorPayload(cwd);
+
+  if (flags.has("json")) {
+    return `${JSON.stringify(payload, null, 2)}\n`;
+  }
+
+  return formatSnitchDoctor(payload);
+}
+
+async function readSnitchDoctorPayload(cwd: string): Promise<SnitchDoctorPayload> {
+  const [session, config] = await Promise.all([readSessionIfExists(cwd), readConfigIfExists(cwd)]);
+  const checks: DoctorCheck[] = [];
+  const target = session?.analysisTarget ?? config?.analysis.target ?? ".";
+  const resolvedTarget = resolveStoredTarget(cwd, target);
+  const initCommand = createDoctorInitCommand(target);
+
+  checks.push(session
+    ? doctorCheck({
+        id: "session",
+        label: "Session state",
+        status: "pass",
+        detail: `${session.status}, ${session.eventCount} captured event(s), graph source ${session.graphSource}`,
+        path: ".snitch/session.json"
+      })
+    : doctorCheck({
+        id: "session",
+        label: "Session state",
+        status: "fail",
+        detail: "No .snitch/session.json found.",
+        path: ".snitch/session.json",
+        nextCommand: initCommand
+      }));
+
+  checks.push(config
+    ? doctorCheck({
+        id: "config",
+        label: "Local config",
+        status: "pass",
+        detail: `agents=${config.agents.join(",") || "none"}, target=${config.analysis.target}`,
+        path: ".snitch/config.json"
+      })
+    : doctorCheck({
+        id: "config",
+        label: "Local config",
+        status: "fail",
+        detail: "No .snitch/config.json found.",
+        path: ".snitch/config.json",
+        nextCommand: initCommand
+      }));
+
+  checks.push(await readTargetDoctorCheck(cwd, target, resolvedTarget));
+  checks.push(await readHookAdapterDoctorCheck(cwd, config, initCommand));
+  checks.push(await readAgentConfigsDoctorCheck(cwd, config, initCommand));
+  checks.push(await readEventLogDoctorCheck(cwd, session));
+  checks.push(await readArtifactDoctorCheck(cwd, target));
+  checks.push(await readGraphDoctorCheck(cwd, target));
+  checks.push(...await readGitHookDoctorChecks(cwd));
+  checks.push(await readProviderDoctorCheck(cwd));
+  checks.push(doctorCheck({
+    id: "mcp",
+    label: "MCP server",
+    status: "pass",
+    detail: "Agents can launch Snitch through `pnpm --silent snitch mcp` and call snitch_doctor.",
+    nextCommand: "pnpm --silent snitch mcp"
+  }));
+
+  const summary = summarizeDoctorChecks(checks);
+
+  return {
+    ok: true,
+    cwd,
+    generatedAt: new Date().toISOString(),
+    ready: summary.fail === 0,
+    summary,
+    ...(session
+      ? {
+          session: {
+            runId: session.runId,
+            status: session.status,
+            task: session.task,
+            analysisTarget: session.analysisTarget,
+            graphSource: session.graphSource,
+            eventCount: session.eventCount
+          }
+        }
+      : {}),
+    ...(config
+      ? {
+          config: {
+            agents: config.agents,
+            generatedConfigs: config.generatedConfigs,
+            hookAdapter: config.hookAdapter,
+            analysisTarget: config.analysis.target
+          }
+        }
+      : {}),
+    checks,
+    nextCommands: createDoctorNextCommands(checks, target)
+  };
+}
+
+async function readTargetDoctorCheck(
+  cwd: string,
+  target: string,
+  resolvedTarget: string
+): Promise<DoctorCheck> {
+  if (await pathExists(resolvedTarget)) {
+    return doctorCheck({
+      id: "analysis-target",
+      label: "Analysis target",
+      status: "pass",
+      detail: `Target resolves to ${storeTargetPath(cwd, resolvedTarget)}.`,
+      path: target
+    });
+  }
+
+  return doctorCheck({
+    id: "analysis-target",
+    label: "Analysis target",
+    status: "fail",
+    detail: `Configured target does not exist: ${target}.`,
+    path: target,
+    nextCommand: createDoctorInitCommand(".")
+  });
+}
+
+async function readHookAdapterDoctorCheck(
+  cwd: string,
+  config: SnitchConfig | undefined,
+  initCommand: string
+): Promise<DoctorCheck> {
+  const hookPath = config?.hookAdapter ?? hookFile;
+  const hook = await inspectFile(cwd, hookPath);
+
+  if (!hook.exists) {
+    return doctorCheck({
+      id: "hook-adapter",
+      label: "Hook adapter",
+      status: "fail",
+      detail: "Generated hook adapter is missing.",
+      path: hookPath,
+      nextCommand: initCommand
+    });
+  }
+
+  if (!hook.executable) {
+    return doctorCheck({
+      id: "hook-adapter",
+      label: "Hook adapter",
+      status: "warn",
+      detail: "Generated hook adapter exists but is not executable.",
+      path: hookPath,
+      nextCommand: `chmod +x ${shellArgForPrompt(hookPath)}`
+    });
+  }
+
+  return doctorCheck({
+    id: "hook-adapter",
+    label: "Hook adapter",
+    status: "pass",
+    detail: `Executable adapter is ready (${hook.bytes} bytes).`,
+    path: hookPath
+  });
+}
+
+async function readAgentConfigsDoctorCheck(
+  cwd: string,
+  config: SnitchConfig | undefined,
+  initCommand: string
+): Promise<DoctorCheck> {
+  if (!config) {
+    return doctorCheck({
+      id: "agent-configs",
+      label: "Agent configs",
+      status: "fail",
+      detail: "Cannot inspect generated agent configs until Snitch is initialized.",
+      nextCommand: initCommand
+    });
+  }
+
+  if (config.generatedConfigs.length === 0) {
+    return doctorCheck({
+      id: "agent-configs",
+      label: "Agent configs",
+      status: "warn",
+      detail: "No generated Codex, Cursor, Claude Code, or OpenCode config is recorded.",
+      nextCommand: initCommand
+    });
+  }
+
+  const missing: string[] = [];
+
+  for (const configPath of config.generatedConfigs) {
+    const file = await inspectFile(cwd, configPath);
+
+    if (!file.exists) {
+      missing.push(configPath);
+    }
+  }
+
+  if (missing.length > 0) {
+    return doctorCheck({
+      id: "agent-configs",
+      label: "Agent configs",
+      status: "warn",
+      detail: `Missing generated config(s): ${missing.join(", ")}.`,
+      nextCommand: initCommand
+    });
+  }
+
+  return doctorCheck({
+    id: "agent-configs",
+    label: "Agent configs",
+    status: "pass",
+    detail: `Generated configs present: ${config.generatedConfigs.join(", ")}.`
+  });
+}
+
+async function readEventLogDoctorCheck(
+  cwd: string,
+  session: SnitchSession | undefined
+): Promise<DoctorCheck> {
+  const log = await inspectFile(cwd, eventsFile);
+
+  if (!log.exists) {
+    return doctorCheck({
+      id: "event-log",
+      label: "Safe event log",
+      status: "warn",
+      detail: "No safe hook event log found yet.",
+      path: eventsFile,
+      nextCommand: "pnpm snitch event --source codex --hook PostToolUse"
+    });
+  }
+
+  return doctorCheck({
+    id: "event-log",
+    label: "Safe event log",
+    status: "pass",
+    detail: `${session?.eventCount ?? 0} captured event(s); raw hook payloads are not stored.`,
+    path: eventsFile
+  });
+}
+
+async function readArtifactDoctorCheck(cwd: string, target: string): Promise<DoctorCheck> {
+  const artifacts = await readStatusArtifacts(cwd);
+  const requiredArtifacts = [
+    "graph",
+    "warnings",
+    "findings",
+    "nextAction",
+    "mermaid",
+    "handoff",
+    "prComment"
+  ] as const;
+  const missing = requiredArtifacts.filter((name) => !artifacts[name].available);
+
+  if (missing.length > 0) {
+    return doctorCheck({
+      id: "artifacts",
+      label: "Generated artifacts",
+      status: "fail",
+      detail: `Missing artifact(s): ${missing.map((name) => artifacts[name].path).join(", ")}.`,
+      nextCommand: `pnpm snitch analyze --target ${shellArgForPrompt(target)} --task "<current task>"`
+    });
+  }
+
+  const totalBytes = requiredArtifacts.reduce((sum, name) => sum + artifacts[name].bytes, 0);
+
+  return doctorCheck({
+    id: "artifacts",
+    label: "Generated artifacts",
+    status: "pass",
+    detail: `Graph, findings, next action, Mermaid, handoff, and PR comment are present (${totalBytes} bytes).`
+  });
+}
+
+async function readGraphDoctorCheck(cwd: string, target: string): Promise<DoctorCheck> {
+  const graph = await readGraphIfExists(cwd);
+
+  if (!graph) {
+    return doctorCheck({
+      id: "graph",
+      label: "Graph parse",
+      status: "fail",
+      detail: "No readable .snitch/graph.json is available.",
+      path: ".snitch/graph.json",
+      nextCommand: `pnpm snitch analyze --target ${shellArgForPrompt(target)} --task "<current task>"`
+    });
+  }
+
+  try {
+    const warnings = await readWarnings(cwd, graph);
+
+    return doctorCheck({
+      id: "graph",
+      label: "Graph parse",
+      status: graph.nodes.length > 0 ? "pass" : "warn",
+      detail: `${graph.nodes.length} node(s), ${graph.edges.length} edge(s), ${warnings.length} warning(s).`,
+      path: ".snitch/graph.json"
+    });
+  } catch (error) {
+    return doctorCheck({
+      id: "graph",
+      label: "Graph parse",
+      status: "fail",
+      detail: `Graph exists, but warning parsing failed: ${errorMessage(error)}.`,
+      path: ".snitch/graph.json",
+      nextCommand: `pnpm snitch analyze --target ${shellArgForPrompt(target)} --task "<current task>"`
+    });
+  }
+}
+
+async function readGitHookDoctorChecks(cwd: string): Promise<DoctorCheck[]> {
+  let hooksDir: string;
+
+  try {
+    hooksDir = await resolveGitHooksDir(cwd);
+  } catch {
+    return [
+      doctorCheck({
+        id: "git-hooks",
+        label: "Local Git hooks",
+        status: "warn",
+        detail: "No Git hooks directory was found; local commit/push refresh is not installed.",
+        nextCommand: "pnpm snitch install-git-hooks"
+      })
+    ];
+  }
+
+  const hookNames: GitHookName[] = ["post-commit", "pre-push"];
+  const states = await Promise.all(
+    hookNames.map(async (hookName) => {
+      const hookPath = resolve(hooksDir, hookName);
+      const file = await inspectAbsoluteFile(hookPath);
+      const contents = file.exists ? await readAbsoluteTextIfExists(hookPath) : "";
+
+      return {
+        hookName,
+        path: hookPath,
+        exists: file.exists,
+        managed: contents ? isSnitchManagedHook(contents) : false
+      };
+    })
+  );
+  const missing = states.filter((state) => !state.exists).map((state) => state.hookName);
+  const unmanaged = states
+    .filter((state) => state.exists && !state.managed)
+    .map((state) => state.hookName);
+
+  if (missing.length === 0 && unmanaged.length === 0) {
+    return [
+      doctorCheck({
+        id: "git-hooks",
+        label: "Local Git hooks",
+        status: "pass",
+        detail: "Snitch-managed post-commit and pre-push hooks are installed.",
+        path: storeTargetPath(cwd, hooksDir)
+      })
+    ];
+  }
+
+  return [
+    doctorCheck({
+      id: "git-hooks",
+      label: "Local Git hooks",
+      status: "warn",
+      detail: [
+        missing.length > 0 ? `missing: ${missing.join(", ")}` : "",
+        unmanaged.length > 0 ? `unmanaged: ${unmanaged.join(", ")}` : ""
+      ].filter(Boolean).join("; "),
+      path: storeTargetPath(cwd, hooksDir),
+      nextCommand: unmanaged.length > 0
+        ? "pnpm snitch install-git-hooks --force"
+        : "pnpm snitch install-git-hooks"
+    })
+  ];
+}
+
+async function readProviderDoctorCheck(cwd: string): Promise<DoctorCheck> {
+  const env = await loadRuntimeEnv(cwd);
+  const cerebras = env.CEREBRAS_API_KEY ? "configured" : "not configured";
+  const backboard = env.BACKBOARD_API_KEY ? "configured" : "not configured";
+
+  return doctorCheck({
+    id: "providers",
+    label: "Optional providers",
+    status: "pass",
+    detail: `Cerebras ${cerebras}; Backboard ${backboard}. Provider keys are optional and are never written to artifacts.`
+  });
+}
+
+function formatSnitchDoctor(payload: SnitchDoctorPayload): string {
+  return [
+    "Snitch doctor",
+    `- Ready: ${payload.ready ? "yes" : "no"}`,
+    `- Checks: ${payload.summary.pass} pass, ${payload.summary.warn} warn, ${payload.summary.fail} fail`,
+    ...(payload.session
+      ? [
+          `- Session: ${payload.session.status}, ${payload.session.graphSource}, ${payload.session.eventCount} event(s)`,
+          `- Target: ${payload.session.analysisTarget}`
+        ]
+      : []),
+    "",
+    "Checks:",
+    ...payload.checks.map(formatDoctorCheck),
+    "",
+    "Next commands:",
+    ...payload.nextCommands.map((command) => `- ${command}`)
+  ].join("\n") + "\n";
+}
+
+function formatDoctorCheck(check: DoctorCheck): string {
+  const path = check.path ? ` (${check.path})` : "";
+  const next = check.nextCommand ? `\n  Next: ${check.nextCommand}` : "";
+
+  return `- [${check.status}] ${check.label}: ${check.detail}${path}${next}`;
+}
+
+function createDoctorNextCommands(checks: DoctorCheck[], target: string): string[] {
+  const commands = checks
+    .map((check) => check.nextCommand)
+    .filter((command): command is string => Boolean(command));
+
+  commands.push(
+    "pnpm snitch status --json",
+    "pnpm snitch changed --json",
+    "pnpm snitch next-action --json",
+    `pnpm snitch check --target ${shellArgForPrompt(target)} --fail-on medium --json`
+  );
+
+  return unique(commands);
+}
+
+function createDoctorInitCommand(target: string): string {
+  return `pnpm snitch init --agent all --target ${shellArgForPrompt(target)} --task "<current task>"`;
+}
+
+function summarizeDoctorChecks(checks: DoctorCheck[]): Record<DoctorStatus, number> {
+  return {
+    pass: checks.filter((check) => check.status === "pass").length,
+    warn: checks.filter((check) => check.status === "warn").length,
+    fail: checks.filter((check) => check.status === "fail").length
+  };
+}
+
+function doctorCheck(check: DoctorCheck): DoctorCheck {
+  return check;
+}
+
+async function inspectFile(
+  cwd: string,
+  path: string
+): Promise<{ exists: boolean; bytes: number; executable: boolean }> {
+  return inspectAbsoluteFile(resolve(cwd, path));
+}
+
+async function inspectAbsoluteFile(
+  path: string
+): Promise<{ exists: boolean; bytes: number; executable: boolean }> {
+  try {
+    const stats = await stat(path);
+
+    return {
+      exists: stats.isFile(),
+      bytes: stats.isFile() ? stats.size : 0,
+      executable: Boolean(stats.mode & 0o111)
+    };
+  } catch {
+    return {
+      exists: false,
+      bytes: 0,
+      executable: false
+    };
+  }
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function readSnitchImpact(cwd: string, flags: ParsedArgs["flags"]): Promise<string> {
@@ -2029,7 +2556,7 @@ function createMcpInitializeResult(params: unknown): Record<string, unknown> {
       version: "0.1.0"
     },
     instructions:
-      "Use Snitch tools to inspect the local .snitch graph, changed files, active warnings, safe agent events, warning traces, next action, and repair prompts for AI coding-agent changes."
+      "Use Snitch tools to inspect setup readiness, the local .snitch graph, changed files, active warnings, safe agent events, warning traces, next action, and repair prompts for AI coding-agent changes."
   };
 }
 
@@ -2040,6 +2567,22 @@ function createMcpTools(): Array<Record<string, unknown>> {
       title: "Snitch Status",
       description:
         "Return the local Snitch session summary, counts, active warnings, safe recent events, artifacts, integrations, and next commands.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          cwd: {
+            type: "string",
+            description: "Repository root. Defaults to the MCP server working directory."
+          }
+        },
+        additionalProperties: false
+      }
+    },
+    {
+      name: "snitch_doctor",
+      title: "Snitch Doctor",
+      description:
+        "Return local Snitch setup readiness for coding agents, including hook adapter, generated agent configs, artifacts, Git hooks, providers, and next commands.",
       inputSchema: {
         type: "object",
         properties: {
@@ -2211,6 +2754,10 @@ async function callMcpTool(cwd: string, params: unknown): Promise<McpToolResult>
       return jsonMcpToolResult(payload);
     }
 
+    if (name === "snitch_doctor") {
+      return jsonMcpToolResult(await readSnitchDoctorPayload(toolCwd));
+    }
+
     if (name === "snitch_check") {
       return await callMcpCheckTool(toolCwd, args);
     }
@@ -2305,6 +2852,10 @@ function mcpFlags(args: Record<string, unknown>): ParsedArgs["flags"] {
     flags.set("warning", args.warning);
   }
 
+  if (typeof args.target === "string") {
+    flags.set("target", args.target);
+  }
+
   if (args.all === true) {
     flags.set("all", true);
   }
@@ -2315,6 +2866,14 @@ function mcpFlags(args: Record<string, unknown>): ParsedArgs["flags"] {
 async function readSessionIfExists(cwd: string): Promise<SnitchSession | undefined> {
   try {
     return await readSession(cwd);
+  } catch {
+    return undefined;
+  }
+}
+
+async function readConfigIfExists(cwd: string): Promise<SnitchConfig | undefined> {
+  try {
+    return await readConfig(cwd);
   } catch {
     return undefined;
   }
@@ -3751,6 +4310,7 @@ alwaysApply: false
 Use Snitch when a task changes routes, tools, schemas, auth, permissions, external APIs, environment variables, database writes, tests, or agent-facing workflows.
 
 - Run \`pnpm snitch analyze --target . --task "<current task>"\` after meaningful implementation changes.
+- Run \`pnpm snitch doctor\` when you need to verify that Snitch is wired into this repo and coding-agent session.
 - Run \`pnpm snitch check --target . --task "<current task>"\` before handing off risky changes.
 - Run \`pnpm snitch insights --offline\` when provider credentials are unavailable.
 - Run \`pnpm snitch next-action\` after Snitch captures a hook event to get the current grounded agent follow-up.
@@ -4170,6 +4730,7 @@ function helpText(): string {
     "  snitch insights [--cwd <repo>] [--offline]",
     "  snitch repair-prompt [--cwd <repo>] [--warning <id>] [--all]",
     "  snitch status [--cwd <repo>] [--json]",
+    "  snitch doctor [--cwd <repo>] [--json]",
     "  snitch changed [--cwd <repo>] [--target <ts-repo>] [--json]",
     "  snitch trace [--cwd <repo>] [--warning <id>] [--json]",
     "  snitch impact [--cwd <repo>] [--warning <id>] [--json]",
