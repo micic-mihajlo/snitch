@@ -30,6 +30,8 @@ export type ExtractTypeScriptGraphOptions = {
 
 export type ExtractTypeScriptGraphResult = {
   snapshot: ReplaySnapshot;
+  /** How many TypeScript source files were scanned — used to diagnose empty results. */
+  sourceFileCount: number;
 };
 
 type MutableGraph = {
@@ -74,12 +76,20 @@ export function extractTypeScriptGraph(options: ExtractTypeScriptGraphOptions): 
     skipFileDependencyResolution: true
   });
 
+  // Scan every TypeScript source file under the target, not just `src/**`, so flat-file,
+  // root-level `app/`/`pages/`, and non-standard monorepo layouts produce a real graph.
+  // Heavy/generated directories are excluded so analysis stays fast and on-signal.
   project.addSourceFilesAtPaths([
-    `${options.cwd}/src/**/*.{ts,tsx}`,
-    `${options.cwd}/tests/**/*.{ts,tsx}`,
-    `${options.cwd}/apps/*/src/**/*.{ts,tsx}`,
-    `${options.cwd}/packages/*/src/**/*.{ts,tsx}`,
-    `${options.cwd}/packages/*/tests/**/*.{ts,tsx}`
+    `${options.cwd}/**/*.{ts,tsx,mts,cts}`,
+    `!${options.cwd}/**/node_modules/**`,
+    `!${options.cwd}/**/dist/**`,
+    `!${options.cwd}/**/build/**`,
+    `!${options.cwd}/**/out/**`,
+    `!${options.cwd}/**/.next/**`,
+    `!${options.cwd}/**/.turbo/**`,
+    `!${options.cwd}/**/coverage/**`,
+    `!${options.cwd}/**/.snitch/**`,
+    `!${options.cwd}/**/*.d.ts`
   ]);
 
   const graph: MutableGraph = {
@@ -90,6 +100,8 @@ export function extractTypeScriptGraph(options: ExtractTypeScriptGraphOptions): 
     envAccesses: [],
     databaseAccesses: []
   };
+
+  const sourceFileCount = project.getSourceFiles().length;
 
   for (const sourceFile of project.getSourceFiles()) {
     extractRouteSurface(options.cwd, sourceFile, graph);
@@ -130,7 +142,7 @@ export function extractTypeScriptGraph(options: ExtractTypeScriptGraphOptions): 
     warnings: graph.warnings
   };
 
-  return { snapshot };
+  return { snapshot, sourceFileCount };
 }
 
 function extractRouteSurface(cwd: string, sourceFile: SourceFile, graph: MutableGraph): void {

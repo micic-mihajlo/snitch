@@ -199,6 +199,40 @@ describe("extractTypeScriptGraph", () => {
     expect(edgeIds).not.toContain("edge:endpoint_get_api_messages-uses-env_openai_api_key");
   });
 
+  it("discovers code in a root-level layout with no src/ directory", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "snitch-rootlevel-extractor-"));
+    tempDirs.push(tempRoot);
+    await mkdir(join(tempRoot, "app/api/charge"), { recursive: true });
+    await writeFile(
+      join(tempRoot, "app/api/charge/route.ts"),
+      [
+        "export async function POST(request: Request) {",
+        "  const body = await request.json();",
+        "  await fetch(\"https://api.stripe.com/v1/charges\", {",
+        "    method: \"POST\",",
+        "    headers: { authorization: `Bearer ${process.env.STRIPE_SECRET_KEY}` },",
+        "    body: JSON.stringify(body)",
+        "  });",
+        "  return Response.json({ ok: true });",
+        "}",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const result = extractTypeScriptGraph({ cwd: tempRoot });
+    const nodeIds = result.snapshot.graph.nodes.map((node) => node.id);
+
+    expect(result.sourceFileCount).toBeGreaterThan(0);
+    expect(nodeIds).toEqual(
+      expect.arrayContaining([
+        "endpoint:POST:/api/charge",
+        "external:api.stripe.com",
+        "env:STRIPE_SECRET_KEY"
+      ])
+    );
+  });
+
   it("extracts MCP-style registered tools with schemas and side effects", async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), "snitch-mcp-tool-extractor-"));
     tempDirs.push(tempRoot);
