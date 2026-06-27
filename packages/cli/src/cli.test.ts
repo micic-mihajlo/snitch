@@ -1,6 +1,8 @@
+import { execFile as execFileCallback } from "node:child_process";
 import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { applyDemoRepair } from "../../../scripts/apply-demo-repair";
 import {
@@ -14,6 +16,7 @@ import {
 const tempDirs: string[] = [];
 const now = new Date("2026-06-27T12:00:00.000Z");
 const demoRoot = resolve(import.meta.dirname, "../../../apps/demo-app");
+const execFile = promisify(execFileCallback);
 
 describe("snitch cli", () => {
   afterEach(async () => {
@@ -293,6 +296,7 @@ describe("snitch cli", () => {
     expect(parsed.recentEvents[0].safeSummary.commandHash).toBeTruthy();
     expect(parsed.artifacts.nextAction.available).toBe(true);
     expect(parsed.artifacts.prComment.available).toBe(true);
+    expect(parsed.nextCommands).toContain("pnpm snitch changed --json");
     expect(parsed.nextCommands).toContain("pnpm snitch next-action --json");
     expect(
       parsed.nextCommands.some((command: string) => command.startsWith("pnpm snitch trace --warning "))
@@ -463,6 +467,48 @@ describe("snitch cli", () => {
     expect(human.stdout).toContain("src/tools/create-issue.ts:9");
   });
 
+  it("focuses active findings on the local Git changed surface", async () => {
+    const cwd = await tempRepo();
+    const target = join(cwd, "demo-app");
+
+    await cp(demoRoot, target, { recursive: true });
+    await git(cwd, ["init"]);
+    await git(cwd, ["config", "user.email", "snitch@example.test"]);
+    await git(cwd, ["config", "user.name", "Snitch Test"]);
+    await git(cwd, ["add", "demo-app"]);
+    await git(cwd, ["commit", "-m", "baseline"]);
+
+    const toolPath = join(target, "src/tools/create-issue.ts");
+    const originalTool = await readFile(toolPath, "utf8");
+    await writeFile(toolPath, `${originalTool}\n// agent touched issue creation\n`, "utf8");
+    await runCli(["analyze", "--target", target, "--task", "Wire an issue tool"], { cwd, now });
+
+    const result = await runCli(["changed", "--json"], { cwd });
+    const parsed = JSON.parse(result.stdout);
+
+    expect(result.code).toBe(0);
+    expect(parsed.git.available).toBe(true);
+    expect(parsed.changedFiles[0]).toMatchObject({
+      path: "demo-app/src/tools/create-issue.ts",
+      targetPath: "src/tools/create-issue.ts",
+      inAnalysisTarget: true
+    });
+    expect(parsed.counts.changedFindings).toBeGreaterThan(0);
+    expect(parsed.changedFindings[0]).toMatchObject({
+      finding: {
+        warningId: "warning:tool_audit_log_missing:create_issue"
+      },
+      matchedFiles: ["src/tools/create-issue.ts"]
+    });
+    expect(parsed.nextCommands[0]).toContain("pnpm snitch trace --warning");
+
+    const human = await runCli(["changed"], { cwd });
+
+    expect(human.stdout).toContain("Snitch changed review");
+    expect(human.stdout).toContain("Findings on changed files");
+    expect(human.stdout).toContain("src/tools/create-issue.ts");
+  });
+
   it("serves Snitch tools over the MCP JSON-RPC handler", async () => {
     const cwd = await tempRepo();
 
@@ -531,9 +577,18 @@ describe("snitch cli", () => {
         }
       }
     });
-    const impact = await handleMcpJsonRpcMessage(cwd, {
+    const changed = await handleMcpJsonRpcMessage(cwd, {
       jsonrpc: "2.0",
       id: 8,
+      method: "tools/call",
+      params: {
+        name: "snitch_changed",
+        arguments: {}
+      }
+    });
+    const impact = await handleMcpJsonRpcMessage(cwd, {
+      jsonrpc: "2.0",
+      id: 9,
       method: "tools/call",
       params: {
         name: "snitch_impact",
@@ -544,7 +599,7 @@ describe("snitch cli", () => {
     });
     const repair = await handleMcpJsonRpcMessage(cwd, {
       jsonrpc: "2.0",
-      id: 9,
+      id: 10,
       method: "tools/call",
       params: {
         name: "snitch_repair_prompt",
@@ -613,6 +668,17 @@ describe("snitch cli", () => {
         };
       };
     };
+    const changedResult = changed as {
+      result: {
+        isError?: boolean;
+        structuredContent: {
+          git: {
+            available: boolean;
+          };
+          changedFindings: unknown[];
+        };
+      };
+    };
     const impactResult = impact as {
       result: {
         isError?: boolean;
@@ -637,6 +703,7 @@ describe("snitch cli", () => {
       "snitch_findings",
       "snitch_next_action",
       "snitch_trace",
+      "snitch_changed",
       "snitch_impact",
       "snitch_repair_prompt"
     ]);
@@ -670,6 +737,9 @@ describe("snitch cli", () => {
       "src/tools/create-issue.ts"
     );
     expect(traceResult.result.structuredContent.timeline.length).toBeGreaterThan(0);
+    expect(changedResult.result.isError).toBe(false);
+    expect(changedResult.result.structuredContent.git.available).toBe(false);
+    expect(changedResult.result.structuredContent.changedFindings).toEqual([]);
     expect(impactResult.result.isError).toBe(false);
     expect(impactResult.result.structuredContent.warning.id).toBe(
       "warning:secret_redaction_missing:create_issue"
@@ -1118,4 +1188,8 @@ async function tempRepo(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "snitch-cli-"));
   tempDirs.push(dir);
   return dir;
+}
+
+async function git(cwd: string, args: string[]): Promise<void> {
+  await execFile("git", args, { cwd });
 }

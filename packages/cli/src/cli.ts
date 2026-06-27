@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
 import { chmod, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { normalizeSnitchEvent, type SnitchEvent } from "@snitch/events";
 import { extractTypeScriptGraph } from "@snitch/extractor-ts";
 import {
@@ -27,6 +29,8 @@ import {
   type SnitchWarning,
   type IntegrationStatus
 } from "../../graph/src/index";
+
+const execFileAsync = promisify(execFile);
 
 type CliResult = {
   code: number;
@@ -258,6 +262,39 @@ type SnitchTracePayload = {
   nextCommands: string[];
 };
 
+type ChangedFile = {
+  path: string;
+  status: string;
+  oldPath?: string;
+  targetPath?: string;
+  inAnalysisTarget: boolean;
+};
+
+type ChangedFinding = {
+  finding: SnitchFinding;
+  matchedFiles: string[];
+};
+
+type SnitchChangedPayload = {
+  ok: true;
+  cwd: string;
+  generatedAt: string;
+  target: string;
+  git: {
+    available: boolean;
+    error?: string;
+  };
+  changedFiles: ChangedFile[];
+  changedFindings: ChangedFinding[];
+  counts: {
+    changedFiles: number;
+    targetChangedFiles: number;
+    activeFindings: number;
+    changedFindings: number;
+  };
+  nextCommands: string[];
+};
+
 type SnitchImpactPayload = {
   ok: true;
   cwd: string;
@@ -446,6 +483,10 @@ export async function runCli(args: string[], options: RunCliOptions = {}): Promi
 
     if (command === "trace") {
       return ok(await readSnitchTrace(cwd, parsed.flags));
+    }
+
+    if (command === "changed") {
+      return ok(await readSnitchChanged(cwd, parsed.flags));
     }
 
     if (command === "findings") {
@@ -1027,6 +1068,7 @@ function createStatusNextCommands(
   warnings: SnitchWarning[]
 ): string[] {
   const commands = [
+    "pnpm snitch changed --json",
     "pnpm snitch next-action --json",
     `pnpm snitch check --target ${shellArgForPrompt(session.analysisTarget)} --fail-on medium --json`
   ];
@@ -1405,6 +1447,238 @@ function formatTimelineEntry(entry: TimelineEntry): string {
   return parts.join(", ");
 }
 
+async function readSnitchChanged(cwd: string, flags: ParsedArgs["flags"]): Promise<string> {
+  const payload = await readSnitchChangedPayload(cwd, flags);
+
+  if (flags.has("json")) {
+    return `${JSON.stringify(payload, null, 2)}\n`;
+  }
+
+  return formatSnitchChanged(payload);
+}
+
+async function readSnitchChangedPayload(
+  cwd: string,
+  flags: ParsedArgs["flags"]
+): Promise<SnitchChangedPayload> {
+  const session = await readSession(cwd);
+  const graph = await readGraphIfExists(cwd);
+
+  if (!graph) {
+    throw new Error("No Snitch graph found. Run `pnpm snitch analyze` or `pnpm snitch init` first.");
+  }
+
+  const targetFlag = flags.get("target");
+  const target = resolveStoredTarget(
+    cwd,
+    targetFlag && targetFlag !== true ? targetFlag : session.analysisTarget
+  );
+  const gitChanged = await readGitChangedFiles(cwd);
+  const changedFiles = gitChanged.files.map((file) => withTargetPath(cwd, target, file));
+  const warnings = await readWarnings(cwd, graph);
+  const findings = buildSnitchFindings(graph, warnings);
+  const changedFindings = findings
+    .map((finding) => matchFindingToChangedFiles(finding, graph, changedFiles))
+    .filter((match): match is ChangedFinding => Boolean(match));
+  const targetChangedFiles = changedFiles.filter((file) => file.inAnalysisTarget).length;
+
+  return {
+    ok: true,
+    cwd,
+    generatedAt: new Date().toISOString(),
+    target: storeTargetPath(cwd, target),
+    git: {
+      available: gitChanged.available,
+      ...(gitChanged.error ? { error: gitChanged.error } : {})
+    },
+    changedFiles,
+    changedFindings,
+    counts: {
+      changedFiles: changedFiles.length,
+      targetChangedFiles,
+      activeFindings: findings.length,
+      changedFindings: changedFindings.length
+    },
+    nextCommands: createChangedNextCommands(session, changedFindings)
+  };
+}
+
+function formatSnitchChanged(payload: SnitchChangedPayload): string {
+  const changedFileLines = payload.changedFiles.length > 0
+    ? payload.changedFiles.map((file) => `  - ${file.status} ${file.path}${file.targetPath ? ` -> ${file.targetPath}` : ""}`)
+    : ["  - none"];
+  const findingLines = payload.changedFindings.length > 0
+    ? payload.changedFindings.flatMap(({ finding, matchedFiles }) => [
+        `- [${finding.severity}] ${finding.title} (${formatFindingLocation(finding)})`,
+        `  Warning: ${finding.warningId}`,
+        `  Matched files: ${matchedFiles.join(", ")}`,
+        `  Repair: ${finding.repairCommand}`
+      ])
+    : ["- No active Snitch findings are anchored to changed files."];
+
+  return [
+    "Snitch changed review",
+    `- Git: ${payload.git.available ? "available" : `unavailable${payload.git.error ? ` (${payload.git.error})` : ""}`}`,
+    `- Target: ${payload.target}`,
+    `- Changed files: ${payload.counts.changedFiles}`,
+    `- Changed files in target: ${payload.counts.targetChangedFiles}`,
+    `- Findings on changed files: ${payload.counts.changedFindings}`,
+    "",
+    "Changed files:",
+    ...changedFileLines,
+    "",
+    "Findings:",
+    ...findingLines,
+    "",
+    "Next commands:",
+    ...payload.nextCommands.map((command) => `- ${command}`)
+  ].join("\n") + "\n";
+}
+
+function createChangedNextCommands(
+  session: SnitchSession,
+  changedFindings: ChangedFinding[]
+): string[] {
+  const commands = changedFindings.flatMap(({ finding }) => [
+    `pnpm snitch trace --warning ${finding.warningId} --json`,
+    finding.repairCommand
+  ]);
+
+  commands.push(
+    `pnpm snitch check --target ${shellArgForPrompt(session.analysisTarget)} --fail-on medium --json`
+  );
+
+  return unique(commands);
+}
+
+async function readGitChangedFiles(cwd: string): Promise<{ available: boolean; files: ChangedFile[]; error?: string }> {
+  const args = ["-C", cwd, "status", "--porcelain=v1", "--untracked-files=all"];
+
+  try {
+    const { stdout } = await execFileAsync("git", args, {
+      maxBuffer: 1024 * 1024
+    });
+
+    return {
+      available: true,
+      files: parseGitPorcelain(stdout)
+    };
+  } catch (error) {
+    return {
+      available: false,
+      files: [],
+      error: errorMessage(error)
+    };
+  }
+}
+
+function parseGitPorcelain(stdout: string): ChangedFile[] {
+  return stdout
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      const status = line.slice(0, 2).trim() || "modified";
+      const rawPath = line.slice(3);
+      const renameParts = rawPath.split(" -> ");
+      const oldPath = renameParts.length > 1 ? normalizePath(renameParts[0] ?? "") : undefined;
+      const path = normalizePath(renameParts.at(-1) ?? rawPath);
+      const file: ChangedFile = {
+        status,
+        path,
+        inAnalysisTarget: false
+      };
+
+      if (oldPath) {
+        file.oldPath = oldPath;
+      }
+
+      return file;
+    });
+}
+
+function withTargetPath(cwd: string, target: string, file: ChangedFile): ChangedFile {
+  const absoluteFile = resolve(cwd, file.path);
+  const targetPath = relativePathWithin(target, absoluteFile);
+
+  if (!targetPath) {
+    return file;
+  }
+
+  return {
+    ...file,
+    targetPath,
+    inAnalysisTarget: true
+  };
+}
+
+function matchFindingToChangedFiles(
+  finding: SnitchFinding,
+  graph: SnitchGraph,
+  changedFiles: ChangedFile[]
+): ChangedFinding | undefined {
+  const findingFiles = filesForFinding(finding, graph);
+  const matchedFiles = unique(
+    changedFiles
+      .filter((file) => file.inAnalysisTarget)
+      .flatMap((file) => {
+        const candidate = file.targetPath ?? file.path;
+        return findingFiles.some((findingFile) => pathsReferToSameFile(candidate, findingFile))
+          ? [candidate]
+          : [];
+      })
+  );
+
+  return matchedFiles.length > 0 ? { finding, matchedFiles } : undefined;
+}
+
+function filesForFinding(finding: SnitchFinding, graph: SnitchGraph): string[] {
+  const nodeById = new Map(graph.nodes.map((node) => [node.id, node]));
+  const files = new Set<string>();
+
+  if (finding.anchor?.file) {
+    files.add(normalizePath(finding.anchor.file));
+  }
+
+  for (const nodeId of finding.relatedNodeIds) {
+    const node = nodeById.get(nodeId);
+
+    if (node?.file) {
+      files.add(normalizePath(node.file));
+    }
+  }
+
+  return [...files];
+}
+
+function pathsReferToSameFile(left: string, right: string): boolean {
+  const normalizedLeft = normalizePath(left);
+  const normalizedRight = normalizePath(right);
+
+  return (
+    normalizedLeft === normalizedRight ||
+    normalizedLeft.endsWith(`/${normalizedRight}`) ||
+    normalizedRight.endsWith(`/${normalizedLeft}`)
+  );
+}
+
+function relativePathWithin(parent: string, child: string): string | undefined {
+  const relativePath = normalizePath(relative(parent, child));
+
+  if (!relativePath || relativePath === ".") {
+    return ".";
+  }
+
+  if (relativePath.startsWith("..") || isAbsolute(relativePath)) {
+    return undefined;
+  }
+
+  return relativePath;
+}
+
+function normalizePath(path: string): string {
+  return path.replaceAll("\\", "/");
+}
+
 async function readSnitchFindings(cwd: string, flags: ParsedArgs["flags"]): Promise<string> {
   const findings = await readSnitchFindingsPayload(cwd);
 
@@ -1755,7 +2029,7 @@ function createMcpInitializeResult(params: unknown): Record<string, unknown> {
       version: "0.1.0"
     },
     instructions:
-      "Use Snitch tools to inspect the local .snitch graph, active warnings, safe agent events, warning traces, next action, and repair prompts for AI coding-agent changes."
+      "Use Snitch tools to inspect the local .snitch graph, changed files, active warnings, safe agent events, warning traces, next action, and repair prompts for AI coding-agent changes."
   };
 }
 
@@ -1859,6 +2133,26 @@ function createMcpTools(): Array<Record<string, unknown>> {
       }
     },
     {
+      name: "snitch_changed",
+      title: "Snitch Changed Review",
+      description:
+        "Return local Git changed files and the active Snitch findings anchored to those changed files.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          cwd: {
+            type: "string",
+            description: "Repository root. Defaults to the MCP server working directory."
+          },
+          target: {
+            type: "string",
+            description: "Analysis target. Defaults to the stored Snitch analysis target."
+          }
+        },
+        additionalProperties: false
+      }
+    },
+    {
       name: "snitch_impact",
       title: "Snitch Warning Impact",
       description:
@@ -1932,6 +2226,10 @@ async function callMcpTool(cwd: string, params: unknown): Promise<McpToolResult>
 
     if (name === "snitch_trace") {
       return jsonMcpToolResult(await readSnitchTracePayload(toolCwd, mcpFlags(args)));
+    }
+
+    if (name === "snitch_changed") {
+      return jsonMcpToolResult(await readSnitchChangedPayload(toolCwd, mcpFlags(args)));
     }
 
     if (name === "snitch_impact") {
@@ -3457,6 +3755,7 @@ Use Snitch when a task changes routes, tools, schemas, auth, permissions, extern
 - Run \`pnpm snitch insights --offline\` when provider credentials are unavailable.
 - Run \`pnpm snitch next-action\` after Snitch captures a hook event to get the current grounded agent follow-up.
 - Run \`pnpm snitch trace --warning <id>\` when you need to connect a warning to safe hook events and graph timeline evidence.
+- Run \`pnpm snitch changed\` before handoff to focus warnings on the local Git changed surface.
 - Run \`pnpm snitch repair-prompt\` when warnings are active, then implement the returned agent prompt.
 - Run \`pnpm snitch finalize\` before preparing a pull request or handoff.
 - Treat \`.snitch/graph.json\`, \`.snitch/warnings.json\`, \`.snitch/findings.json\`, \`.snitch/next-action.md\`, \`.snitch/mermaid.mmd\`, \`.snitch/pr-comment.md\`, and \`.snitch/handoff.md\` as generated evidence.
@@ -3871,6 +4170,7 @@ function helpText(): string {
     "  snitch insights [--cwd <repo>] [--offline]",
     "  snitch repair-prompt [--cwd <repo>] [--warning <id>] [--all]",
     "  snitch status [--cwd <repo>] [--json]",
+    "  snitch changed [--cwd <repo>] [--target <ts-repo>] [--json]",
     "  snitch trace [--cwd <repo>] [--warning <id>] [--json]",
     "  snitch impact [--cwd <repo>] [--warning <id>] [--json]",
     "  snitch findings [--cwd <repo>] [--json]",
