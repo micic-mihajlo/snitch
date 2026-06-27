@@ -17,6 +17,8 @@ This repo now includes a working first slice:
 - Cerebras and Backboard sponsor lanes with graceful fallback behavior
 - Vite/React dashboard using React Flow for the live graph surface
 
+See [docs/strategy-2026-06-27.md](docs/strategy-2026-06-27.md) for the researched next build direction.
+
 ## Run It
 
 ```bash
