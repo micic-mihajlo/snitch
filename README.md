@@ -88,7 +88,7 @@ pnpm snitch findings --json
 pnpm snitch impact --warning warning:secret_redaction_missing:create_issue
 pnpm snitch impact --warning warning:secret_redaction_missing:create_issue --json
 pnpm --silent snitch mcp
-pnpm snitch watch --target apps/demo-app --port 4767 --scan-interval 300
+pnpm snitch watch --target apps/demo-app --port 4767 --scan-interval 300 --insights
 pnpm dev:live
 pnpm demo:live --offline-integrations
 pnpm demo:reset
@@ -107,7 +107,7 @@ pnpm smoke:cerebras
 pnpm smoke:backboard
 ```
 
-Local credentials live in `.env`; `.env.example` lists the supported keys. `CEREBRAS_MODEL` can be a public model ID such as `gpt-oss-120b` or an org dedicated endpoint ID when available.
+Local credentials live in `.env`; `.env.example` lists the supported keys. `CEREBRAS_MODEL` can be a public model ID such as `gpt-oss-120b` or an org dedicated endpoint ID when available. `SNITCH_PROVIDER_TIMEOUT_MS` controls the timeout used by `snitch insights` and live `watch --insights`.
 
 ## Background Agent Setup
 
@@ -182,7 +182,7 @@ It does not store the raw hook payload. File-changing events refresh the configu
 - `GET /api/events` for Server-Sent Events
 - `POST /api/events?source=<agent>&hook=<hook>` for local hook ingestion
 
-The dashboard listens to `/api/events` for low-latency state updates and falls back to polling `/api/state` when EventSource is unavailable. By default, `snitch watch` also polls the configured TypeScript target and regenerates `.snitch/graph.json`, `.snitch/warnings.json`, `.snitch/findings.json`, `.snitch/next-action.md`, `.snitch/mermaid.mmd`, and `.snitch/pr-comment.md` when code files change. Use `--target <repo>` to override the stored analysis target, `--scan-interval <ms>` to tune refresh speed, or `--no-files` to serve artifacts without file watching.
+The dashboard listens to `/api/events` for low-latency state updates and falls back to polling `/api/state` when EventSource is unavailable. By default, `snitch watch` also polls the configured TypeScript target and regenerates `.snitch/graph.json`, `.snitch/warnings.json`, `.snitch/findings.json`, `.snitch/next-action.md`, `.snitch/mermaid.mmd`, and `.snitch/pr-comment.md` when code files change. Use `--target <repo>` to override the stored analysis target, `--scan-interval <ms>` to tune refresh speed, `--insights` to refresh Cerebras/Backboard insight artifacts after graph refreshes, or `--no-files` to serve artifacts without file watching.
 
 `/api/state` includes the latest graph, warnings, publishable artifacts, integration status, and the last 50 normalized hook events. The event trace is safe for UI rendering because it contains hashes, byte counts, safe summary keys, and file evidence rather than raw payloads.
 

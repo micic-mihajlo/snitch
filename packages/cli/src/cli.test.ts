@@ -1308,7 +1308,8 @@ describe("snitch cli", () => {
 
     const result = await refreshWatchedTarget(cwd, {
       target,
-      now: new Date("2026-06-27T12:04:00.000Z")
+      now: new Date("2026-06-27T12:04:00.000Z"),
+      refreshInsights: true
     });
     const state = await readLiveState(cwd);
     const timelineEntries = (await readFile(join(cwd, ".snitch/timeline.jsonl"), "utf8"))
@@ -1329,8 +1330,21 @@ describe("snitch cli", () => {
     const latestTimelineEntry = timelineEntries.at(-1);
 
     expect(result.status).toBe("updated");
+    expect(result.insights).toEqual({
+      refreshed: true
+    });
     expect(state.graph.nodes.some((node) => node.id === "service:tool_audit_log")).toBe(true);
     expect(state.graph.nodes.some((node) => node.label === "Tool audit log")).toBe(true);
+    expect(state.insights).toMatchObject({
+      generatedAt: "2026-06-27T12:04:00.000Z",
+      cerebras: {
+        status: "disabled",
+        triageStatus: "disabled"
+      },
+      backboard: {
+        status: "disabled"
+      }
+    });
     expect(state.session).toMatchObject({
       graphSource: "typescript",
       lastAnalyzedAt: "2026-06-27T12:04:00.000Z"

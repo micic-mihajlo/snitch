@@ -424,6 +424,7 @@ type LiveServerOptions = {
   intervalMs: number;
   fileWatch: boolean;
   scanIntervalMs: number;
+  refreshInsights: boolean;
   target?: string;
 };
 
@@ -431,6 +432,10 @@ type WatchRefreshResult = {
   status: "updated" | "kept-last-good";
   target: string;
   message: string;
+  insights?: {
+    refreshed: boolean;
+    error?: string;
+  };
 };
 
 type HookIngestResult = {
@@ -597,11 +602,13 @@ export async function runCli(args: string[], options: RunCliOptions = {}): Promi
       const target = targetFlag && targetFlag !== true ? resolve(cwd, targetFlag) : undefined;
       const fileWatch = !parsed.flags.has("no-files");
       const scanIntervalMs = parseScanInterval(parsed.flags.get("scan-interval"));
+      const refreshInsights = fileWatch && parsed.flags.has("insights");
       const liveOptions: LiveServerOptions = {
         port,
         intervalMs,
         fileWatch,
-        scanIntervalMs
+        scanIntervalMs,
+        refreshInsights
       };
 
       if (target) {
@@ -616,7 +623,8 @@ export async function runCli(args: string[], options: RunCliOptions = {}): Promi
           "- State: /api/state",
           "- Events: GET /api/events",
           "- Hook ingest: POST /api/events?source=<agent>&hook=<hook>",
-          `- File watcher: ${fileWatch ? `enabled (${scanIntervalMs}ms)` : "disabled"}`
+          `- File watcher: ${fileWatch ? `enabled (${scanIntervalMs}ms)` : "disabled"}`,
+          `- Insight refresh: ${refreshInsights ? "enabled" : "disabled"}`
         ].join("\n") + "\n"
       );
     }
@@ -889,6 +897,20 @@ function formatRepairVerification(payload: SnitchRepairVerificationPayload): str
 
 function flagString(value: string | true | undefined): string | undefined {
   return value && value !== true ? value : undefined;
+}
+
+function parseProviderTimeoutMs(value: string | undefined): number {
+  if (!value) {
+    return 12000;
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isFinite(parsed)) {
+    return 12000;
+  }
+
+  return Math.min(Math.max(parsed, 1000), 30000);
 }
 
 async function initializeSnitch(
@@ -3355,8 +3377,10 @@ async function startLiveServer(cwd: string, options: LiveServerOptions): Promise
   const fileRefreshOptions: {
     target?: string;
     scanIntervalMs: number;
+    refreshInsights: boolean;
   } = {
-    scanIntervalMs: options.scanIntervalMs
+    scanIntervalMs: options.scanIntervalMs,
+    refreshInsights: options.refreshInsights
   };
 
   if (options.target) {
@@ -3403,6 +3427,7 @@ function startFileRefreshLoop(
   input: {
     target?: string;
     scanIntervalMs: number;
+    refreshInsights: boolean;
   }
 ): () => void {
   let lastFingerprint = "";
@@ -3423,7 +3448,8 @@ function startFileRefreshLoop(
         lastFingerprint = fingerprint;
         await refreshWatchedTarget(cwd, {
           target,
-          now: new Date()
+          now: new Date(),
+          refreshInsights: input.refreshInsights
         });
       }
     } catch {
@@ -3447,6 +3473,7 @@ export async function refreshWatchedTarget(
   input: {
     target?: string;
     now: Date;
+    refreshInsights?: boolean;
   }
 ): Promise<WatchRefreshResult> {
   await ensureInitialized(cwd, input.now);
@@ -3476,11 +3503,30 @@ export async function refreshWatchedTarget(
     delete updatedSession.lastAnalysisError;
     await writeJson(cwd, ".snitch/session.json", updatedSession);
 
-    return {
+    const result: WatchRefreshResult = {
       status: "updated",
       target,
       message: `refreshed from file watcher target ${analysis.target}`
     };
+
+    if (input.refreshInsights) {
+      try {
+        await writeInsightArtifacts(cwd, {
+          offline: false,
+          now: input.now
+        });
+        result.insights = {
+          refreshed: true
+        };
+      } catch (error) {
+        result.insights = {
+          refreshed: false,
+          error: errorMessage(error)
+        };
+      }
+    }
+
+    return result;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const updatedSession: SnitchSession = {
@@ -3588,7 +3634,8 @@ async function writeInsightArtifacts(cwd: string, options: InsightOptions): Prom
   };
   const diff = diffGraph(previousGraph, graph);
   const env = options.offline ? {} : await loadRuntimeEnv(cwd);
-  const fetcher = options.offline ? undefined : createTimeoutFetcher(1600);
+  const providerTimeoutMs = parseProviderTimeoutMs(env.SNITCH_PROVIDER_TIMEOUT_MS);
+  const fetcher = options.offline ? undefined : createTimeoutFetcher(providerTimeoutMs);
   const backboardInput: Parameters<typeof loadBackboardRepoRules>[0] = { task };
 
   if (env.BACKBOARD_API_KEY) {
@@ -5119,7 +5166,7 @@ function helpText(): string {
     "  snitch event [--cwd <repo>] [--source <agent>] [--hook <hook>] < stdin-json",
     "  snitch analyze [--cwd <output-repo>] [--target <ts-repo>] [--task <task>]",
     "  snitch check [--cwd <output-repo>] [--target <ts-repo>] [--task <task>] [--fail-on info|low|medium|high] [--json]",
-    "  snitch watch [--cwd <repo>] [--target <ts-repo>] [--port <port>] [--interval <ms>] [--scan-interval <ms>] [--no-files]",
+    "  snitch watch [--cwd <repo>] [--target <ts-repo>] [--port <port>] [--interval <ms>] [--scan-interval <ms>] [--insights] [--no-files]",
     "  snitch insights [--cwd <repo>] [--offline]",
     "  snitch repair-prompt [--cwd <repo>] [--warning <id>] [--all]",
     "  snitch status [--cwd <repo>] [--json]",
