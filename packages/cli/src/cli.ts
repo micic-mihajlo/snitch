@@ -289,6 +289,34 @@ type GitHubPublishOptions = {
   marker: string;
 };
 
+type JsonRpcId = string | number | null;
+
+type JsonRpcRequest = {
+  jsonrpc: "2.0";
+  id?: JsonRpcId;
+  method: string;
+  params?: unknown;
+};
+
+type JsonRpcResponse = {
+  jsonrpc: "2.0";
+  id: JsonRpcId;
+  result?: unknown;
+  error?: {
+    code: number;
+    message: string;
+  };
+};
+
+type McpToolResult = {
+  content: Array<{
+    type: "text";
+    text: string;
+  }>;
+  structuredContent?: Record<string, unknown>;
+  isError?: boolean;
+};
+
 type MemoryArtifact = {
   generatedAt: string;
   backboard: {
@@ -350,6 +378,11 @@ export async function runCli(args: string[], options: RunCliOptions = {}): Promi
 
     if (command === "impact") {
       return ok(await readSnitchImpact(cwd, parsed.flags));
+    }
+
+    if (command === "mcp") {
+      await startMcpStdioServer(cwd);
+      return ok("");
     }
 
     if (command === "analyze") {
@@ -1085,6 +1118,289 @@ function formatNodeLocation(node: SnitchImpactPayload["nodes"][number]): string 
   }
 
   return typeof node.line === "number" ? ` at ${node.file}:${node.line}` : ` at ${node.file}`;
+}
+
+async function startMcpStdioServer(cwd: string): Promise<void> {
+  process.stdin.setEncoding("utf8");
+
+  let buffer = "";
+  let chain = Promise.resolve();
+
+  await new Promise<void>((resolveServer) => {
+    process.stdin.on("data", (chunk) => {
+      buffer += String(chunk);
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        chain = chain.then(() => processMcpLine(cwd, line));
+      }
+    });
+
+    process.stdin.on("end", () => {
+      const trailingLine = buffer;
+      buffer = "";
+
+      if (trailingLine.trim()) {
+        chain = chain.then(() => processMcpLine(cwd, trailingLine));
+      }
+
+      void chain.finally(resolveServer);
+    });
+
+    process.stdin.resume();
+  });
+}
+
+async function processMcpLine(cwd: string, line: string): Promise<void> {
+  const trimmed = line.trim();
+
+  if (!trimmed) {
+    return;
+  }
+
+  try {
+    const message = JSON.parse(trimmed) as unknown;
+    const response = await handleMcpJsonRpcMessage(cwd, message);
+
+    if (response !== undefined) {
+      process.stdout.write(`${JSON.stringify(response)}\n`);
+    }
+  } catch {
+    process.stdout.write(`${JSON.stringify(jsonRpcError(null, -32700, "Parse error"))}\n`);
+  }
+}
+
+export async function handleMcpJsonRpcMessage(
+  cwd: string,
+  message: unknown
+): Promise<JsonRpcResponse | JsonRpcResponse[] | undefined> {
+  if (Array.isArray(message)) {
+    const responses: JsonRpcResponse[] = [];
+
+    for (const item of message) {
+      const response = await handleMcpJsonRpcMessage(cwd, item);
+
+      if (Array.isArray(response)) {
+        responses.push(...response);
+      } else if (response) {
+        responses.push(response);
+      }
+    }
+
+    return responses.length > 0 ? responses : undefined;
+  }
+
+  if (!isJsonRpcRequest(message)) {
+    return jsonRpcError(null, -32600, "Invalid Request");
+  }
+
+  const hasId = Object.prototype.hasOwnProperty.call(message, "id");
+
+  if (!hasId) {
+    return undefined;
+  }
+
+  try {
+    if (message.method === "initialize") {
+      return jsonRpcResult(message.id ?? null, createMcpInitializeResult(message.params));
+    }
+
+    if (message.method === "ping") {
+      return jsonRpcResult(message.id ?? null, {});
+    }
+
+    if (message.method === "tools/list") {
+      return jsonRpcResult(message.id ?? null, { tools: createMcpTools() });
+    }
+
+    if (message.method === "tools/call") {
+      return jsonRpcResult(message.id ?? null, await callMcpTool(cwd, message.params));
+    }
+
+    return jsonRpcError(message.id ?? null, -32601, `Method not found: ${message.method}`);
+  } catch (error) {
+    return jsonRpcError(message.id ?? null, -32603, errorMessage(error));
+  }
+}
+
+function createMcpInitializeResult(params: unknown): Record<string, unknown> {
+  const requestedVersion = isRecord(params) && typeof params.protocolVersion === "string"
+    ? params.protocolVersion
+    : "2025-11-25";
+
+  return {
+    protocolVersion: requestedVersion,
+    capabilities: {
+      tools: {
+        listChanged: false
+      }
+    },
+    serverInfo: {
+      name: "snitch",
+      title: "Snitch",
+      version: "0.1.0"
+    },
+    instructions:
+      "Use Snitch tools to inspect the local .snitch graph, active warnings, safe agent events, and repair prompts for AI coding-agent changes."
+  };
+}
+
+function createMcpTools(): Array<Record<string, unknown>> {
+  return [
+    {
+      name: "snitch_status",
+      title: "Snitch Status",
+      description:
+        "Return the local Snitch session summary, counts, active warnings, safe recent events, artifacts, integrations, and next commands.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          cwd: {
+            type: "string",
+            description: "Repository root. Defaults to the MCP server working directory."
+          }
+        },
+        additionalProperties: false
+      }
+    },
+    {
+      name: "snitch_impact",
+      title: "Snitch Warning Impact",
+      description:
+        "Return the graph neighborhood, files, nodes, edges, and repair command for an active Snitch warning.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          cwd: {
+            type: "string",
+            description: "Repository root. Defaults to the MCP server working directory."
+          },
+          warning: {
+            type: "string",
+            description: "Warning id. Defaults to the highest-severity active warning."
+          }
+        },
+        additionalProperties: false
+      }
+    },
+    {
+      name: "snitch_repair_prompt",
+      title: "Snitch Repair Prompt",
+      description:
+        "Return the paste-ready coding-agent repair prompt for an active Snitch warning.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          cwd: {
+            type: "string",
+            description: "Repository root. Defaults to the MCP server working directory."
+          },
+          warning: {
+            type: "string",
+            description: "Warning id. Defaults to the highest-priority active warning."
+          },
+          all: {
+            type: "boolean",
+            description: "Return repair prompts for all active warnings."
+          }
+        },
+        additionalProperties: false
+      }
+    }
+  ];
+}
+
+async function callMcpTool(cwd: string, params: unknown): Promise<McpToolResult> {
+  const paramsRecord = isRecord(params) ? params : {};
+  const name = typeof paramsRecord.name === "string" ? paramsRecord.name : "";
+  const args = isRecord(paramsRecord.arguments) ? paramsRecord.arguments : {};
+  const toolCwd = resolveMcpCwd(cwd, args);
+
+  try {
+    if (name === "snitch_status") {
+      const payload = await readSnitchStatusPayload(toolCwd);
+      return jsonMcpToolResult(payload);
+    }
+
+    if (name === "snitch_impact") {
+      const payload = await readSnitchImpactPayload(toolCwd, mcpFlags(args));
+      return jsonMcpToolResult(payload);
+    }
+
+    if (name === "snitch_repair_prompt") {
+      return {
+        content: [
+          {
+            type: "text",
+            text: await readRepairPrompt(toolCwd, mcpFlags(args))
+          }
+        ],
+        isError: false
+      };
+    }
+
+    return {
+      content: [{ type: "text", text: `Unknown Snitch MCP tool: ${name || "(missing)"}` }],
+      isError: true
+    };
+  } catch (error) {
+    return {
+      content: [{ type: "text", text: errorMessage(error) }],
+      isError: true
+    };
+  }
+}
+
+function jsonMcpToolResult(value: unknown): McpToolResult {
+  return {
+    content: [{ type: "text", text: JSON.stringify(value, null, 2) }],
+    structuredContent: value as Record<string, unknown>,
+    isError: false
+  };
+}
+
+function mcpFlags(args: Record<string, unknown>): ParsedArgs["flags"] {
+  const flags = new Map<string, string | true>();
+
+  if (typeof args.warning === "string") {
+    flags.set("warning", args.warning);
+  }
+
+  if (args.all === true) {
+    flags.set("all", true);
+  }
+
+  return flags;
+}
+
+function resolveMcpCwd(baseCwd: string, args: Record<string, unknown>): string {
+  return typeof args.cwd === "string" && args.cwd.trim()
+    ? resolve(baseCwd, args.cwd)
+    : baseCwd;
+}
+
+function isJsonRpcRequest(value: unknown): value is JsonRpcRequest {
+  return isRecord(value) && value.jsonrpc === "2.0" && typeof value.method === "string";
+}
+
+function jsonRpcResult(id: JsonRpcId, result: unknown): JsonRpcResponse {
+  return {
+    jsonrpc: "2.0",
+    id,
+    result
+  };
+}
+
+function jsonRpcError(id: JsonRpcId, code: number, message: string): JsonRpcResponse {
+  return {
+    jsonrpc: "2.0",
+    id,
+    error: {
+      code,
+      message
+    }
+  };
 }
 
 async function ensureInitialized(cwd: string, now: Date): Promise<void> {
@@ -2799,6 +3115,14 @@ function unique<T>(items: T[]): T[] {
   return [...new Set(items)];
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function ok(stdout: string): CliResult {
   return {
     code: 0,
@@ -2821,6 +3145,7 @@ function helpText(): string {
     "  snitch repair-prompt [--cwd <repo>] [--warning <id>] [--all]",
     "  snitch status [--cwd <repo>] [--json]",
     "  snitch impact [--cwd <repo>] [--warning <id>] [--json]",
+    "  snitch mcp [--cwd <repo>]",
     "  snitch finalize [--cwd <repo>]",
     "  snitch install-git-hooks [--cwd <repo>] [--force]",
     "  snitch publish-github [--cwd <repo>] [--repo owner/name] [--pr <number>] [--token <token>]"

@@ -1,9 +1,11 @@
 import { runCli } from "./cli";
 
-const result = await runCli(process.argv.slice(2), {
-  cwd: process.cwd(),
-  stdin: await readStdin()
-});
+const args = process.argv.slice(2);
+const shouldStreamStdin = args[0] === "mcp";
+const options = shouldStreamStdin
+  ? { cwd: process.cwd() }
+  : { cwd: process.cwd(), stdin: await readStdin() };
+const result = await runCli(args, options);
 
 if (result.stdout) {
   process.stdout.write(result.stdout);

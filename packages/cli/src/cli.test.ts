@@ -3,7 +3,13 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { applyDemoRepair } from "../../../scripts/apply-demo-repair";
-import { ingestHookEvent, readLiveState, refreshWatchedTarget, runCli } from "./cli";
+import {
+  handleMcpJsonRpcMessage,
+  ingestHookEvent,
+  readLiveState,
+  refreshWatchedTarget,
+  runCli
+} from "./cli";
 
 const tempDirs: string[] = [];
 const now = new Date("2026-06-27T12:00:00.000Z");
@@ -312,6 +318,96 @@ describe("snitch cli", () => {
     expect(human.stdout).toContain("Snitch impact");
     expect(human.stdout).toContain("Affected files:");
     expect(human.stdout).toContain("src/tools/create-issue.ts");
+  });
+
+  it("serves Snitch tools over the MCP JSON-RPC handler", async () => {
+    const cwd = await tempRepo();
+
+    await runCli(["analyze", "--target", demoRoot, "--task", "Wire an issue tool"], { cwd, now });
+
+    const initialized = await handleMcpJsonRpcMessage(cwd, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-11-25",
+        capabilities: {},
+        clientInfo: {
+          name: "test-client",
+          version: "0.0.0"
+        }
+      }
+    });
+    const tools = await handleMcpJsonRpcMessage(cwd, {
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/list"
+    });
+    const ping = await handleMcpJsonRpcMessage(cwd, {
+      jsonrpc: "2.0",
+      id: 3,
+      method: "ping"
+    });
+    const impact = await handleMcpJsonRpcMessage(cwd, {
+      jsonrpc: "2.0",
+      id: 4,
+      method: "tools/call",
+      params: {
+        name: "snitch_impact",
+        arguments: {
+          warning: "warning:secret_redaction_missing:create_issue"
+        }
+      }
+    });
+    const repair = await handleMcpJsonRpcMessage(cwd, {
+      jsonrpc: "2.0",
+      id: 5,
+      method: "tools/call",
+      params: {
+        name: "snitch_repair_prompt",
+        arguments: {
+          warning: "warning:secret_redaction_missing:create_issue"
+        }
+      }
+    });
+
+    const initializedResult = initialized as {
+      result: { capabilities: { tools: { listChanged: boolean } } };
+    };
+    const toolsResult = tools as { result: { tools: Array<{ name: string }> } };
+    const pingResult = ping as { result: Record<string, never> };
+    const impactResult = impact as {
+      result: {
+        isError?: boolean;
+        structuredContent: {
+          warning: { id: string };
+          nodes: Array<{ id: string }>;
+        };
+      };
+    };
+    const repairResult = repair as {
+      result: {
+        isError?: boolean;
+        content: Array<{ text: string }>;
+      };
+    };
+
+    expect(initializedResult.result.capabilities.tools.listChanged).toBe(false);
+    expect(pingResult.result).toEqual({});
+    expect(toolsResult.result.tools.map((tool) => tool.name)).toEqual([
+      "snitch_status",
+      "snitch_impact",
+      "snitch_repair_prompt"
+    ]);
+    expect(impactResult.result.isError).toBe(false);
+    expect(impactResult.result.structuredContent.warning.id).toBe(
+      "warning:secret_redaction_missing:create_issue"
+    );
+    expect(impactResult.result.structuredContent.nodes.map((node) => node.id)).toContain(
+      "tool:create_issue"
+    );
+    expect(repairResult.result.isError).toBe(false);
+    expect(repairResult.result.content[0]?.text).toContain("Instruction for the coding agent:");
   });
 
   it("analyzes a TypeScript target into Snitch artifacts", async () => {
