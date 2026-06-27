@@ -2,6 +2,7 @@ import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { applyDemoRepair } from "../../../scripts/apply-demo-repair";
 import { readLiveState, refreshWatchedTarget, runCli } from "./cli";
 
 const tempDirs: string[] = [];
@@ -57,6 +58,9 @@ describe("snitch cli", () => {
     );
     await expect(readFile(join(cwd, ".cursor/rules/snitch.mdc"), "utf8")).resolves.toContain(
       "Snitch local verification"
+    );
+    await expect(readFile(join(cwd, ".cursor/rules/snitch.mdc"), "utf8")).resolves.toContain(
+      "pnpm snitch check"
     );
     await expect(readFile(join(cwd, ".cursor/rules/snitch.mdc"), "utf8")).resolves.toContain(
       "pnpm snitch repair-prompt"
@@ -205,6 +209,76 @@ describe("snitch cli", () => {
     await expect(readFile(join(cwd, ".snitch/pr-comment.md"), "utf8")).resolves.toContain(
       "No audit trail for external tool calls"
     );
+  });
+
+  it("fails check when warnings meet the severity threshold", async () => {
+    const cwd = await tempRepo();
+    const result = await runCli(["check", "--target", demoRoot, "--task", "Wire an issue tool"], {
+      cwd,
+      now
+    });
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("Snitch check failed");
+    expect(result.stdout).toContain("Fail on: high");
+    expect(result.stdout).toContain("Blocking warnings: 2");
+    expect(result.stdout).toContain("No audit trail for external tool calls");
+    expect(result.stdout).toContain("pnpm snitch repair-prompt --warning warning:tool_audit_log_missing:create_issue");
+    await expect(readFile(join(cwd, ".snitch/warnings.json"), "utf8")).resolves.toContain(
+      "warning:tool_audit_log_missing:create_issue"
+    );
+  });
+
+  it("prints JSON check output for CI consumers", async () => {
+    const cwd = await tempRepo();
+    const result = await runCli(
+      ["check", "--target", demoRoot, "--task", "Wire an issue tool", "--fail-on", "medium", "--json"],
+      {
+        cwd,
+        now
+      }
+    );
+    const parsed = JSON.parse(result.stdout) as {
+      ok: boolean;
+      failOn: string;
+      counts: { warnings: number; blockingWarnings: number };
+      blockingWarnings: Array<{ id: string; repairCommand: string }>;
+    };
+
+    expect(result.code).toBe(1);
+    expect(parsed.ok).toBe(false);
+    expect(parsed.failOn).toBe("medium");
+    expect(parsed.counts).toMatchObject({
+      warnings: 4,
+      blockingWarnings: 4
+    });
+    expect(parsed.blockingWarnings[0]?.repairCommand).toContain("pnpm snitch repair-prompt --warning");
+  });
+
+  it("passes check after companion warnings are repaired", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "snitch-check-repaired-"));
+    const repairedRoot = join(tempRoot, "demo-app");
+    const cwd = join(tempRoot, "workspace");
+    tempDirs.push(tempRoot);
+    await cp(demoRoot, repairedRoot, { recursive: true });
+    await mkdir(cwd, { recursive: true });
+    await runCli(["analyze", "--cwd", cwd, "--target", repairedRoot, "--task", "Wire an issue tool"], {
+      now
+    });
+    await applyDemoRepair({
+      target: repairedRoot,
+      artifactsDir: join(cwd, ".snitch"),
+      now
+    });
+
+    const result = await runCli(["check", "--cwd", cwd, "--target", repairedRoot, "--task", "Wire an issue tool"], {
+      now: new Date("2026-06-27T12:06:00.000Z")
+    });
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("Snitch check passed");
+    expect(result.stdout).toContain("Blocking warnings: 0");
   });
 
   it("reads live dashboard state from Snitch artifacts", async () => {

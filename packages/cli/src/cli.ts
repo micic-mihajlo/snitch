@@ -205,6 +205,8 @@ type RepairPromptContext = {
   ranking?: RankedWarning;
 };
 
+type CheckThreshold = SnitchWarning["severity"];
+
 const eventsFile = ".snitch/events.jsonl";
 const hookFile = ".snitch/hooks/codex-hook.mjs";
 const defaultTask =
@@ -245,6 +247,12 @@ export async function runCli(args: string[], options: RunCliOptions = {}): Promi
       const target = resolve(cwd, String(parsed.flags.get("target") ?? "."));
       const task = String(parsed.flags.get("task") ?? defaultTask);
       return ok(await analyzeTypeScriptRepo(cwd, target, task, now));
+    }
+
+    if (command === "check") {
+      const target = resolve(cwd, String(parsed.flags.get("target") ?? "."));
+      const task = String(parsed.flags.get("task") ?? defaultTask);
+      return checkTypeScriptRepo(cwd, target, task, now, parsed.flags);
     }
 
     if (command === "watch") {
@@ -340,6 +348,82 @@ async function analyzeTypeScriptRepo(
     `- Warnings: ${analysis.snapshot.warnings.length}`,
     "- Updated: .snitch/graph.json, .snitch/mermaid.mmd, .snitch/pr-comment.md"
   ].join("\n") + "\n";
+}
+
+async function checkTypeScriptRepo(
+  cwd: string,
+  target: string,
+  task: string,
+  now: Date,
+  flags: ParsedArgs["flags"]
+): Promise<CliResult> {
+  await ensureDirs(cwd);
+
+  const failOn = parseCheckThreshold(flags.get("fail-on"));
+  const analysis = await writeTypeScriptArtifacts(cwd, {
+    target,
+    task,
+    now,
+    runId: `snitch-check-${basename(target) || "repo"}`
+  });
+  const blockingWarnings = warningsAtOrAboveThreshold(analysis.snapshot.warnings, failOn);
+
+  await persistAnalysisTarget(cwd, target, now, analysis.snapshot.id);
+
+  if (flags.has("json")) {
+    return {
+      code: blockingWarnings.length > 0 ? 1 : 0,
+      stdout: `${JSON.stringify(
+        {
+          ok: blockingWarnings.length === 0,
+          target: analysis.target,
+          failOn,
+          counts: {
+            nodes: analysis.snapshot.graph.nodes.length,
+            edges: analysis.snapshot.graph.edges.length,
+            warnings: analysis.snapshot.warnings.length,
+            blockingWarnings: blockingWarnings.length
+          },
+          blockingWarnings: blockingWarnings.map((warning) => ({
+            id: warning.id,
+            severity: warning.severity,
+            title: warning.title,
+            repairCommand: `pnpm snitch repair-prompt --warning ${warning.id}`
+          }))
+        },
+        null,
+        2
+      )}\n`,
+      stderr: ""
+    };
+  }
+
+  const heading = blockingWarnings.length > 0 ? "Snitch check failed." : "Snitch check passed.";
+  const warningLines = blockingWarnings.length > 0
+    ? [
+        "",
+        "Blocking warnings:",
+        ...blockingWarnings.map((warning) =>
+          `- [${warning.severity}] ${warning.title} (${warning.id})\n  Repair: pnpm snitch repair-prompt --warning ${warning.id}`
+        )
+      ]
+    : [];
+
+  return {
+    code: blockingWarnings.length > 0 ? 1 : 0,
+    stdout: [
+      heading,
+      `- Target: ${analysis.target}`,
+      `- Fail on: ${failOn}`,
+      `- Nodes: ${analysis.snapshot.graph.nodes.length}`,
+      `- Edges: ${analysis.snapshot.graph.edges.length}`,
+      `- Warnings: ${analysis.snapshot.warnings.length}`,
+      `- Blocking warnings: ${blockingWarnings.length}`,
+      "- Updated: .snitch/graph.json, .snitch/warnings.json, .snitch/pr-comment.md",
+      ...warningLines
+    ].join("\n") + "\n",
+    stderr: ""
+  };
 }
 
 async function initializeSnitch(
@@ -1061,6 +1145,33 @@ function warningSeverityRank(severity: SnitchWarning["severity"]): number {
     medium: 2,
     high: 3
   }[severity];
+}
+
+function parseCheckThreshold(value: string | true | undefined): CheckThreshold {
+  if (!value || value === true) {
+    return "high";
+  }
+
+  if (isWarningSeverity(value)) {
+    return value;
+  }
+
+  throw new Error(`Invalid check threshold ${value}. Expected info, low, medium, or high.`);
+}
+
+function warningsAtOrAboveThreshold(
+  warnings: SnitchWarning[],
+  threshold: CheckThreshold
+): SnitchWarning[] {
+  const thresholdRank = warningSeverityRank(threshold);
+
+  return warnings
+    .filter((warning) => warningSeverityRank(warning.severity) >= thresholdRank)
+    .sort(
+      (left, right) =>
+        warningSeverityRank(right.severity) - warningSeverityRank(left.severity) ||
+        left.id.localeCompare(right.id)
+    );
 }
 
 function shellArgForPrompt(value: string): string {
@@ -1829,6 +1940,7 @@ alwaysApply: false
 Use Snitch when a task changes routes, tools, schemas, auth, permissions, external APIs, environment variables, database writes, tests, or agent-facing workflows.
 
 - Run \`pnpm snitch analyze --target . --task "<current task>"\` after meaningful implementation changes.
+- Run \`pnpm snitch check --target . --task "<current task>"\` before handing off risky changes.
 - Run \`pnpm snitch insights --offline\` when provider credentials are unavailable.
 - Run \`pnpm snitch repair-prompt\` when warnings are active, then implement the returned agent prompt.
 - Run \`pnpm snitch finalize\` before preparing a pull request or handoff.
@@ -2165,6 +2277,7 @@ function helpText(): string {
     "  snitch init [--cwd <repo>] [--agent codex|cursor|claude|opencode|all] [--target <ts-repo>] [--task <task>]",
     "  snitch event [--cwd <repo>] [--source <agent>] [--hook <hook>] < stdin-json",
     "  snitch analyze [--cwd <output-repo>] [--target <ts-repo>] [--task <task>]",
+    "  snitch check [--cwd <output-repo>] [--target <ts-repo>] [--task <task>] [--fail-on info|low|medium|high] [--json]",
     "  snitch watch [--cwd <repo>] [--target <ts-repo>] [--port <port>] [--interval <ms>] [--scan-interval <ms>] [--no-files]",
     "  snitch insights [--cwd <repo>] [--offline]",
     "  snitch repair-prompt [--cwd <repo>] [--warning <id>] [--all]",
