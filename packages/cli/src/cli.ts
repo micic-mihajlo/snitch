@@ -1,5 +1,5 @@
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { normalizeSnitchEvent, type SnitchEvent } from "@snitch/events";
 import { extractTypeScriptGraph } from "@snitch/extractor-ts";
@@ -24,6 +24,7 @@ type RunCliOptions = {
 };
 
 type AgentTarget = "codex" | "claude" | "opencode";
+type GraphSource = "replay" | "typescript";
 
 type ParsedArgs = {
   positional: string[];
@@ -41,6 +42,11 @@ type SnitchConfig = {
   hookCommand: string;
   agents: AgentTarget[];
   generatedConfigs: string[];
+  analysis: {
+    engine: "typescript";
+    target: string;
+    refreshOn: "file-event";
+  };
   createdAt: string;
 };
 
@@ -53,9 +59,39 @@ type SnitchSession = {
   lastEventAt: string;
   eventCount: number;
   snapshotId: string;
+  graphSource: GraphSource;
+  analysisTarget: string;
+  lastAnalyzedAt?: string;
+  lastAnalysisError?: string;
   eventsPath: ".snitch/events.jsonl";
   artifacts: Array<keyof SnitchArtifacts>;
 };
+
+type AnalysisWriteResult = {
+  snapshot: ReplaySnapshot;
+  graphSource: "typescript";
+  target: string;
+  analyzedAt: string;
+};
+
+type EventGraphUpdate =
+  | {
+      graphSource: "typescript";
+      snapshotId: string;
+      lastAnalyzedAt: string;
+      message: string;
+    }
+  | {
+      graphSource: GraphSource;
+      snapshotId: string;
+      message: string;
+      lastAnalysisError: string;
+    }
+  | {
+      graphSource: "replay";
+      snapshotId: string;
+      message: string;
+    };
 
 const eventsFile = ".snitch/events.jsonl";
 const hookFile = ".snitch/hooks/codex-hook.mjs";
@@ -72,7 +108,8 @@ export async function runCli(args: string[], options: RunCliOptions = {}): Promi
     if (command === "init") {
       const task = String(parsed.flags.get("task") ?? defaultTask);
       const agents = parseAgents(parsed.flags.get("agent"));
-      const message = await initializeSnitch(cwd, task, now, agents);
+      const target = resolve(cwd, String(parsed.flags.get("target") ?? "."));
+      const message = await initializeSnitch(cwd, task, now, agents, target);
       return ok(message);
     }
 
@@ -120,27 +157,22 @@ async function analyzeTypeScriptRepo(
   task: string,
   now: Date
 ): Promise<string> {
-  const extracted = extractTypeScriptGraph({
-    cwd: target,
-    title: `Extracted graph for ${basename(target) || "repo"}`,
-    generatedAt: now.toISOString()
-  });
-  const artifacts = buildSnitchArtifacts({
-    replay: [extracted.snapshot],
-    reviewSnapshot: extracted.snapshot,
-    createdAt: now.toISOString(),
-    runId: `snitch-analyze-${basename(target) || "repo"}`,
+  await ensureDirs(cwd);
+
+  const analysis = await writeTypeScriptArtifacts(cwd, {
+    target,
     task,
-    source: "snitch-ts-extractor"
+    now,
+    runId: `snitch-analyze-${basename(target) || "repo"}`
   });
 
-  await writeArtifacts(cwd, artifacts);
+  await persistAnalysisTarget(cwd, target, now, analysis.snapshot.id);
 
   return [
     `Snitch analyzed ${target}.`,
-    `- Nodes: ${extracted.snapshot.graph.nodes.length}`,
-    `- Edges: ${extracted.snapshot.graph.edges.length}`,
-    `- Warnings: ${extracted.snapshot.warnings.length}`,
+    `- Nodes: ${analysis.snapshot.graph.nodes.length}`,
+    `- Edges: ${analysis.snapshot.graph.edges.length}`,
+    `- Warnings: ${analysis.snapshot.warnings.length}`,
     "- Updated: .snitch/graph.json, .snitch/mermaid.mmd, .snitch/pr-comment.md"
   ].join("\n") + "\n";
 }
@@ -149,7 +181,8 @@ async function initializeSnitch(
   cwd: string,
   task: string,
   now: Date,
-  agents: AgentTarget[] = ["codex"]
+  agents: AgentTarget[] = ["codex"],
+  target: string = cwd
 ): Promise<string> {
   await ensureDirs(cwd);
 
@@ -158,6 +191,7 @@ async function initializeSnitch(
   const baseline = replay[0] ?? getReviewSnapshot(replay);
   const runId = createRunId(now);
   const generatedConfigs = generatedConfigPaths(agents);
+  const storedTarget = storeTargetPath(cwd, target);
   const config: SnitchConfig = {
     version: 1,
     project: basename(cwd) || "repo",
@@ -169,6 +203,11 @@ async function initializeSnitch(
     hookCommand: "node .snitch/hooks/codex-hook.mjs <hook-name>",
     agents,
     generatedConfigs,
+    analysis: {
+      engine: "typescript",
+      target: storedTarget,
+      refreshOn: "file-event"
+    },
     createdAt
   };
   const session = createSession({
@@ -178,7 +217,9 @@ async function initializeSnitch(
     startedAt: createdAt,
     lastEventAt: createdAt,
     eventCount: 0,
-    snapshotId: baseline.id
+    snapshotId: baseline.id,
+    graphSource: "replay",
+    analysisTarget: storedTarget
   });
 
   await writeJson(cwd, ".snitch/config.json", config);
@@ -201,6 +242,7 @@ async function initializeSnitch(
     `- Hook adapter: ${hookFile}`,
     `- Agent command: node ${hookFile} <hook-name>`,
     `- Agent configs: ${generatedConfigs.join(", ")}`,
+    `- Analysis target: ${storedTarget}`,
     "- Local state: .snitch/config.json, .snitch/session.json, .snitch/events.jsonl",
     "- Artifacts: .snitch/graph.json, .snitch/mermaid.mmd, .snitch/pr-comment.md"
   ].join("\n") + "\n";
@@ -214,6 +256,7 @@ async function recordSnitchEvent(
 
   const session = await readSession(cwd);
   const events = await readEvents(cwd);
+  const config = await readConfig(cwd);
   const event = normalizeSnitchEvent({
     runId: session.runId,
     source: input.source,
@@ -222,32 +265,36 @@ async function recordSnitchEvent(
     receivedAt: input.now
   });
   const nextEvents = [...events, event];
-  const replay = getDemoReplay();
-  const snapshot = pickSnapshotForEventCount(replay, nextEvents.length);
-  const updatedSession = {
+  const graphUpdate = await updateGraphForEvent(cwd, {
+    event,
+    eventCount: nextEvents.length,
+    session,
+    config,
+    now: input.now
+  });
+  const updatedSession: SnitchSession = {
     ...session,
     status: "running",
     lastEventAt: input.now.toISOString(),
     eventCount: nextEvents.length,
-    snapshotId: snapshot.id
+    snapshotId: graphUpdate.snapshotId,
+    graphSource: graphUpdate.graphSource
   } satisfies SnitchSession;
 
+  if (graphUpdate.graphSource === "typescript" && "lastAnalyzedAt" in graphUpdate) {
+    updatedSession.lastAnalyzedAt = graphUpdate.lastAnalyzedAt;
+    delete updatedSession.lastAnalysisError;
+  } else if ("lastAnalysisError" in graphUpdate) {
+    updatedSession.lastAnalysisError = graphUpdate.lastAnalysisError;
+  }
+
   await writeJsonl(cwd, eventsFile, nextEvents);
-  await writeJson(cwd, ".snitch/session.json", updatedSession);
-  await writeReplayArtifacts(cwd, {
-    replay,
-    snapshot,
-    runId: session.runId,
-    task: session.task,
-    createdAt: session.startedAt,
-    source: "snitch-background"
-  });
   await writeJson(cwd, ".snitch/session.json", updatedSession);
 
   return [
     `Snitch captured ${input.source}:${input.hook}.`,
     `- Events: ${nextEvents.length}`,
-    `- Snapshot: ${snapshot.title}`,
+    `- Graph: ${graphUpdate.message}`,
     "- Updated: .snitch/graph.json, .snitch/mermaid.mmd, .snitch/pr-comment.md"
   ].join("\n") + "\n";
 }
@@ -256,9 +303,41 @@ async function finalizeSnitch(cwd: string, now: Date): Promise<string> {
   await ensureInitialized(cwd, now);
 
   const session = await readSession(cwd);
+  const config = await readConfig(cwd);
+  const target = resolveStoredTarget(cwd, session.analysisTarget ?? config.analysis.target);
+
+  if (session.graphSource === "typescript") {
+    const analysis = await writeTypeScriptArtifacts(cwd, {
+      target,
+      task: session.task,
+      now,
+      runId: session.runId
+    });
+
+    const updatedSession: SnitchSession = {
+      ...session,
+      status: "finalized",
+      lastEventAt: now.toISOString(),
+      snapshotId: analysis.snapshot.id,
+      graphSource: "typescript",
+      lastAnalyzedAt: analysis.analyzedAt
+    };
+
+    delete updatedSession.lastAnalysisError;
+    await writeJson(cwd, ".snitch/session.json", updatedSession);
+
+    return [
+      "Snitch finalized the background session.",
+      "- Graph: refreshed from TypeScript target",
+      "- PR body: .snitch/pr-comment.md",
+      "- Handoff: .snitch/handoff.md",
+      "- Mermaid: .snitch/mermaid.mmd"
+    ].join("\n") + "\n";
+  }
+
   const replay = getDemoReplay();
   const reviewSnapshot = getReviewSnapshot(replay);
-  const updatedSession = {
+  const updatedSession: SnitchSession = {
     ...session,
     status: "finalized",
     lastEventAt: now.toISOString(),
@@ -293,6 +372,8 @@ async function readSnitchStatus(cwd: string): Promise<string> {
     `- Task: ${session.task}`,
     `- Events: ${events.length}`,
     `- Current snapshot: ${session.snapshotId}`,
+    `- Graph source: ${session.graphSource ?? "replay"}`,
+    `- Analysis target: ${session.analysisTarget ?? "."}`,
     `- Hook adapter: ${hookFile}`,
     "- Configure your coding agent to run: node .snitch/hooks/codex-hook.mjs <hook-name>"
   ].join("\n") + "\n";
@@ -308,6 +389,177 @@ async function ensureInitialized(cwd: string, now: Date): Promise<void> {
 
 async function ensureDirs(cwd: string): Promise<void> {
   await mkdir(resolve(cwd, ".snitch/hooks"), { recursive: true });
+}
+
+async function updateGraphForEvent(
+  cwd: string,
+  input: {
+    event: SnitchEvent;
+    eventCount: number;
+    session: SnitchSession;
+    config: SnitchConfig;
+    now: Date;
+  }
+): Promise<EventGraphUpdate> {
+  const target = resolveStoredTarget(cwd, input.session.analysisTarget ?? input.config.analysis.target);
+
+  if (shouldRefreshFromEvent(input.event)) {
+    try {
+      const analysis = await writeTypeScriptArtifacts(cwd, {
+        target,
+        task: input.session.task,
+        now: input.now,
+        runId: input.session.runId
+      });
+
+      if (analysis.snapshot.graph.nodes.length > 0) {
+        return {
+          graphSource: "typescript",
+          snapshotId: analysis.snapshot.id,
+          lastAnalyzedAt: analysis.analyzedAt,
+          message: `refreshed from TypeScript target ${analysis.target}`
+        };
+      }
+
+      return await writeReplayGraphForEvent(cwd, input);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+
+      return {
+        graphSource: input.session.graphSource ?? "replay",
+        snapshotId: input.session.snapshotId,
+        message: `kept last valid graph; TypeScript extraction failed (${message})`,
+        lastAnalysisError: message
+      };
+    }
+  }
+
+  if (input.session.graphSource === "typescript") {
+    return {
+      graphSource: "typescript",
+      snapshotId: input.session.snapshotId,
+      lastAnalyzedAt: input.session.lastAnalyzedAt ?? input.now.toISOString(),
+      message: "kept current TypeScript graph"
+    };
+  }
+
+  return writeReplayGraphForEvent(cwd, input);
+}
+
+async function writeReplayGraphForEvent(
+  cwd: string,
+  input: {
+    eventCount: number;
+    session: SnitchSession;
+  }
+): Promise<EventGraphUpdate> {
+  const replay = getDemoReplay();
+  const snapshot = pickSnapshotForEventCount(replay, input.eventCount);
+
+  await writeReplayArtifacts(cwd, {
+    replay,
+    snapshot,
+    runId: input.session.runId,
+    task: input.session.task,
+    createdAt: input.session.startedAt,
+    source: "snitch-background"
+  });
+
+  return {
+    graphSource: "replay",
+    snapshotId: snapshot.id,
+    message: `advanced replay snapshot ${snapshot.title}`
+  };
+}
+
+async function writeTypeScriptArtifacts(
+  cwd: string,
+  input: {
+    target: string;
+    task: string;
+    now: Date;
+    runId: string;
+  }
+): Promise<AnalysisWriteResult> {
+  const analyzedAt = input.now.toISOString();
+  const extracted = extractTypeScriptGraph({
+    cwd: input.target,
+    title: `Extracted graph for ${basename(input.target) || "repo"}`,
+    generatedAt: analyzedAt
+  });
+  const artifacts = buildSnitchArtifacts({
+    replay: [extracted.snapshot],
+    reviewSnapshot: extracted.snapshot,
+    createdAt: analyzedAt,
+    runId: input.runId,
+    task: input.task,
+    source: "snitch-ts-extractor"
+  });
+
+  await writeArtifacts(cwd, artifacts);
+
+  return {
+    snapshot: extracted.snapshot,
+    graphSource: "typescript",
+    target: storeTargetPath(cwd, input.target),
+    analyzedAt
+  };
+}
+
+async function persistAnalysisTarget(
+  cwd: string,
+  target: string,
+  now: Date,
+  snapshotId: string
+): Promise<void> {
+  const storedTarget = storeTargetPath(cwd, target);
+
+  try {
+    const config = await readConfig(cwd);
+    await writeJson(cwd, ".snitch/config.json", {
+      ...config,
+      analysis: {
+        engine: "typescript",
+        target: storedTarget,
+        refreshOn: "file-event"
+      }
+    } satisfies SnitchConfig);
+  } catch {
+    await writeJson(cwd, ".snitch/config.json", {
+      version: 1,
+      project: basename(cwd) || "repo",
+      mode: "background-companion",
+      autoInject: true,
+      includeFiles: true,
+      artifactsDir: ".snitch",
+      hookAdapter: hookFile,
+      hookCommand: "node .snitch/hooks/codex-hook.mjs <hook-name>",
+      agents: ["codex"],
+      generatedConfigs: [],
+      analysis: {
+        engine: "typescript",
+        target: storedTarget,
+        refreshOn: "file-event"
+      },
+      createdAt: now.toISOString()
+    } satisfies SnitchConfig);
+  }
+
+  try {
+    const session = await readSession(cwd);
+    const updatedSession: SnitchSession = {
+      ...session,
+      snapshotId,
+      graphSource: "typescript",
+      analysisTarget: storedTarget,
+      lastAnalyzedAt: now.toISOString()
+    };
+
+    delete updatedSession.lastAnalysisError;
+    await writeJson(cwd, ".snitch/session.json", updatedSession);
+  } catch {
+    // `snitch analyze` can be used as a standalone artifact generator before init.
+  }
 }
 
 function pickSnapshotForEventCount(replay: ReplaySnapshot[], eventCount: number): ReplaySnapshot {
@@ -362,6 +614,8 @@ function createSession(input: {
   lastEventAt: string;
   eventCount: number;
   snapshotId: string;
+  graphSource: GraphSource;
+  analysisTarget: string;
 }): SnitchSession {
   return {
     runId: input.runId,
@@ -372,6 +626,8 @@ function createSession(input: {
     lastEventAt: input.lastEventAt,
     eventCount: input.eventCount,
     snapshotId: input.snapshotId,
+    graphSource: input.graphSource,
+    analysisTarget: input.analysisTarget,
     eventsPath: eventsFile,
     artifacts: ["graph.json", "timeline.jsonl", "mermaid.mmd", "handoff.md", "pr-comment.md"]
   };
@@ -512,9 +768,75 @@ function generatedConfigPaths(agents: AgentTarget[]): string[] {
   return paths;
 }
 
+function shouldRefreshFromEvent(event: SnitchEvent): boolean {
+  if (event.phase === "file_changed") {
+    return true;
+  }
+
+  if (event.phase !== "tool_after") {
+    return false;
+  }
+
+  const toolName = String(event.safeSummary.tool_name ?? event.safeSummary.tool ?? "").toLowerCase();
+  const fileChangingTools = ["apply_patch", "edit", "multiedit", "write", "notebookedit"];
+
+  if (fileChangingTools.some((tool) => toolName.includes(tool))) {
+    return true;
+  }
+
+  return Boolean(event.evidence?.some((item) => looksLikeCodePath(item.file)));
+}
+
+function looksLikeCodePath(path: string): boolean {
+  return /\.(cjs|cts|js|jsx|mjs|mts|ts|tsx)$/.test(path);
+}
+
+function storeTargetPath(cwd: string, target: string): string {
+  const resolvedTarget = isAbsolute(target) ? target : resolve(cwd, target);
+  const relativeTarget = relative(cwd, resolvedTarget);
+
+  if (!relativeTarget) {
+    return ".";
+  }
+
+  if (!relativeTarget.startsWith("..") && !isAbsolute(relativeTarget)) {
+    return relativeTarget;
+  }
+
+  return resolvedTarget;
+}
+
+function resolveStoredTarget(cwd: string, target: string): string {
+  return isAbsolute(target) ? target : resolve(cwd, target);
+}
+
+async function readConfig(cwd: string): Promise<SnitchConfig> {
+  const contents = await readFile(resolve(cwd, ".snitch/config.json"), "utf8");
+  const parsed = JSON.parse(contents) as SnitchConfig;
+
+  if (!parsed.analysis) {
+    return {
+      ...parsed,
+      analysis: {
+        engine: "typescript",
+        target: ".",
+        refreshOn: "file-event"
+      }
+    };
+  }
+
+  return parsed;
+}
+
 async function readSession(cwd: string): Promise<SnitchSession> {
   const contents = await readFile(resolve(cwd, ".snitch/session.json"), "utf8");
-  return JSON.parse(contents) as SnitchSession;
+  const parsed = JSON.parse(contents) as SnitchSession;
+
+  return {
+    ...parsed,
+    graphSource: parsed.graphSource ?? "replay",
+    analysisTarget: parsed.analysisTarget ?? "."
+  };
 }
 
 async function readEvents(cwd: string): Promise<SnitchEvent[]> {
@@ -600,7 +922,7 @@ function helpText(): string {
     "Snitch background companion",
     "",
     "Commands:",
-    "  snitch init [--cwd <repo>] [--agent codex|claude|opencode|all] [--task <task>]",
+    "  snitch init [--cwd <repo>] [--agent codex|claude|opencode|all] [--target <ts-repo>] [--task <task>]",
     "  snitch event [--cwd <repo>] [--source <agent>] [--hook <hook>] < stdin-json",
     "  snitch analyze [--cwd <output-repo>] [--target <ts-repo>] [--task <task>]",
     "  snitch status [--cwd <repo>]",

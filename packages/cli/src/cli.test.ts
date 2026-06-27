@@ -38,15 +38,19 @@ describe("snitch cli", () => {
 
   it("can generate Codex, Claude, and OpenCode background adapter configs", async () => {
     const cwd = await tempRepo();
-    const result = await runCli(["init", "--agent", "all", "--task", "Wire an issue tool"], {
-      cwd,
-      now
-    });
+    const result = await runCli(
+      ["init", "--agent", "all", "--target", demoRoot, "--task", "Wire an issue tool"],
+      {
+        cwd,
+        now
+      }
+    );
 
     expect(result.code).toBe(0);
     expect(result.stdout).toContain(".codex/hooks.json");
     expect(result.stdout).toContain(".claude/settings.local.json");
     expect(result.stdout).toContain(".opencode/snitch-plugin.ts");
+    expect(result.stdout).toContain(`Analysis target: ${demoRoot}`);
     await expect(readFile(join(cwd, ".codex/hooks.json"), "utf8")).resolves.toContain(
       "PostToolUse"
     );
@@ -87,6 +91,45 @@ describe("snitch cli", () => {
     );
   });
 
+  it("refreshes the graph from the TypeScript target after a file-changing hook", async () => {
+    const cwd = await tempRepo();
+    const payload = JSON.stringify({
+      tool_name: "apply_patch",
+      file_path: "src/tools/create-issue.ts"
+    });
+
+    await runCli(["init", "--target", demoRoot, "--task", "Wire an issue tool"], { cwd, now });
+    const result = await runCli(["event", "--source", "codex", "--hook", "PostToolUse"], {
+      cwd,
+      stdin: payload,
+      now: new Date("2026-06-27T12:01:00.000Z")
+    });
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("Graph: refreshed from TypeScript target");
+    await expect(readFile(join(cwd, ".snitch/graph.json"), "utf8")).resolves.toContain(
+      "api.github.com API"
+    );
+    await expect(readFile(join(cwd, ".snitch/session.json"), "utf8")).resolves.toContain(
+      "\"graphSource\": \"typescript\""
+    );
+    await expect(readFile(join(cwd, ".snitch/pr-comment.md"), "utf8")).resolves.toContain(
+      "No audit trail for external tool calls"
+    );
+
+    const promptResult = await runCli(["event", "--source", "codex", "--hook", "UserPromptSubmit"], {
+      cwd,
+      stdin: JSON.stringify({ prompt: "keep going" }),
+      now: new Date("2026-06-27T12:02:00.000Z")
+    });
+
+    expect(promptResult.code).toBe(0);
+    expect(promptResult.stdout).toContain("Graph: kept current TypeScript graph");
+    await expect(readFile(join(cwd, ".snitch/graph.json"), "utf8")).resolves.toContain(
+      "api.github.com API"
+    );
+  });
+
   it("prints status for the agent background loop", async () => {
     const cwd = await tempRepo();
 
@@ -96,6 +139,7 @@ describe("snitch cli", () => {
     expect(result.code).toBe(0);
     expect(result.stdout).toContain("Snitch background companion");
     expect(result.stdout).toContain("node .snitch/hooks/codex-hook.mjs");
+    expect(result.stdout).toContain("Analysis target: .");
   });
 
   it("analyzes a TypeScript target into Snitch artifacts", async () => {
@@ -107,6 +151,7 @@ describe("snitch cli", () => {
 
     expect(result.code).toBe(0);
     expect(result.stdout).toContain("Nodes: 10");
+    await expect(readFile(join(cwd, ".snitch/config.json"), "utf8")).resolves.toContain(demoRoot);
     await expect(readFile(join(cwd, ".snitch/graph.json"), "utf8")).resolves.toContain(
       "api.github.com API"
     );

@@ -14,6 +14,7 @@ This repo now includes a working first slice:
 - privacy-preserving local event log at `.snitch/events.jsonl`
 - normalized event model with payload hashing and safe summaries
 - narrow TypeScript extractor for real repo graph generation
+- target-aware hook refresh: file-changing events regenerate code-derived artifacts
 - prepared demo assistant app under `apps/demo-app`
 - deterministic graph IR, hashing, diffing, and last-good-graph behavior
 - replayed issue-tool demo graph with missing companion warnings
@@ -27,18 +28,18 @@ See [docs/strategy-2026-06-27.md](docs/strategy-2026-06-27.md) for the researche
 
 ```bash
 pnpm install
-pnpm snitch init --agent all --task "Add an external issue-creation tool to this coding assistant"
-pnpm snitch analyze --target apps/demo-app --task "Add an external issue-creation tool to this coding assistant"
+pnpm snitch init --agent all --target apps/demo-app --task "Add an external issue-creation tool to this coding assistant"
+printf '{"tool_name":"apply_patch","file_path":"src/tools/create-issue.ts"}' | pnpm snitch event --source codex --hook PostToolUse
 pnpm dev
 ```
 
-`pnpm snitch init` creates the local background state and hook adapters. `pnpm snitch analyze` runs the TypeScript extractor against the demo app and writes `.snitch` graph, Mermaid, handoff, and PR artifacts. The dashboard runs through `apps/web` and opens a local Vite server. The first screen is the Snitch inspection surface: live graph, warning rail, timeline, sponsor lane, and PR artifact preview.
+`pnpm snitch init` creates the local background state, hook adapters, and analysis target. File-changing `snitch event` calls refresh the TypeScript graph and write `.snitch` graph, Mermaid, handoff, and PR artifacts. The dashboard runs through `apps/web` and opens a local Vite server. The first screen is the Snitch inspection surface: live graph, warning rail, timeline, sponsor lane, and PR artifact preview.
 
 Useful commands:
 
 ```bash
-pnpm snitch init --agent all --task "Watch this coding-agent session"
-printf '{"tool_name":"apply_patch","file_path":"src/tools/issues.ts"}' | pnpm snitch event --source codex --hook PostToolUse
+pnpm snitch init --agent all --target apps/demo-app --task "Watch this coding-agent session"
+printf '{"tool_name":"apply_patch","file_path":"src/tools/create-issue.ts"}' | pnpm snitch event --source codex --hook PostToolUse
 pnpm snitch analyze --target apps/demo-app --task "Add an external issue-creation tool"
 pnpm snitch status
 pnpm snitch finalize
@@ -76,7 +77,7 @@ The generated adapter calls back into this Snitch checkout and records:
 - payload hash and byte count
 - safe event summary keys such as tool name, file path, command hash/byte count, status, or exit code
 
-It does not store the raw hook payload. Each event advances the demo graph sequence and regenerates:
+It does not store the raw hook payload. File-changing events refresh the configured TypeScript target and regenerate:
 
 - `.snitch/graph.json`
 - `.snitch/timeline.jsonl`
@@ -90,7 +91,7 @@ For code-derived artifacts, run:
 pnpm snitch analyze --target apps/demo-app --task "Add an external issue-creation tool"
 ```
 
-The current extractor recognizes the demo assistant router, tool registry, `create_issue` tool, input schema, provider `fetch`, provider credential, and missing audit/redaction/permission/test companions.
+`snitch analyze` is also useful as a one-shot artifact refresh; it persists the target so later hook events can keep using it. If the target cannot be extracted yet, Snitch keeps the last valid graph and can fall back to the replay sequence. The current extractor recognizes the demo assistant router, tool registry, `create_issue` tool, input schema, provider `fetch`, provider credential, and missing audit/redaction/permission/test companions.
 
 ## Demo Thesis
 
