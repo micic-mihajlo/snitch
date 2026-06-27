@@ -19,6 +19,7 @@ This repo now includes a working first slice:
 - graph scope controls for all, changed, and selected-warning impact views
 - insights artifact: `pnpm snitch insights` writes Cerebras narration, warning ranking, repair prompts, and Backboard repo-rule status
 - finalize memory lane: `pnpm snitch finalize` writes Backboard warning-decision memory with hashed evidence only
+- PR publish bridge: `pnpm snitch publish-github` posts or updates one top-level GitHub PR comment from `.snitch/pr-comment.md`
 - scripted repair pass: `pnpm demo:repair` adds the missing companion work and regenerates warning-free artifacts
 - one-command live demo runner: `pnpm demo:live`
 - prepared demo assistant app under `apps/demo-app`
@@ -53,6 +54,7 @@ pnpm demo:live --offline-integrations
 pnpm demo:repair
 pnpm snitch status
 pnpm snitch finalize
+pnpm snitch publish-github --repo owner/name --pr 123
 pnpm test
 pnpm build
 pnpm verify:browser
@@ -99,6 +101,8 @@ It does not store the raw hook payload. File-changing events refresh the configu
 - `.snitch/insights.json`
 
 `snitch finalize` also writes `.snitch/memory.json`. With Backboard credentials, it remembers active warning decisions as safe metadata and evidence hashes; without credentials, it records disabled status so the live dashboard can show the memory lane honestly.
+
+`snitch publish-github` is the PR publish plane. It reads `.snitch/pr-comment.md`, wraps it with a stable hidden marker, and creates or updates one top-level PR timeline comment through the GitHub issue comments API. It is intended for GitHub Actions or a future GitHub App, not for the coding agent runtime. See [templates/github/snitch-pr-summary.yml](templates/github/snitch-pr-summary.yml).
 
 `pnpm snitch watch` exposes:
 

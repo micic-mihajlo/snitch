@@ -249,6 +249,103 @@ describe("snitch cli", () => {
       }
     }
   });
+
+  it("publishes the PR artifact as a GitHub issue comment", async () => {
+    const cwd = await tempRepo();
+    const calls: Array<{ url: string; method: string; body: string }> = [];
+
+    await runCli(["analyze", "--target", demoRoot, "--task", "Wire an issue tool"], {
+      cwd,
+      now
+    });
+    const result = await runCli(
+      ["publish-github", "--repo", "acme/widgets", "--pr", "17", "--token", "ghs_test"],
+      {
+        cwd,
+        fetcher: async (url, init) => {
+          calls.push({
+            url: String(url),
+            method: String(init?.method ?? "GET"),
+            body: String(init?.body ?? "")
+          });
+
+          if (String(init?.method ?? "GET") === "GET") {
+            return new Response(JSON.stringify([]), { status: 200 });
+          }
+
+          return new Response(
+            JSON.stringify({
+              id: 10,
+              html_url: "https://github.com/acme/widgets/pull/17#issuecomment-10"
+            }),
+            { status: 201 }
+          );
+        }
+      }
+    );
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("Snitch created the PR summary comment");
+    expect(result.stdout).not.toContain("ghs_test");
+    expect(calls.map((call) => call.method)).toEqual(["GET", "POST"]);
+    expect(calls[0]?.url).toBe(
+      "https://api.github.com/repos/acme/widgets/issues/17/comments?per_page=100"
+    );
+    expect(calls[1]?.url).toBe("https://api.github.com/repos/acme/widgets/issues/17/comments");
+    expect(calls[1]?.body).toContain("<!-- snitch-pr-summary -->");
+    expect(calls[1]?.body).toContain("Snitch Review");
+  });
+
+  it("updates the existing Snitch PR comment when the marker is present", async () => {
+    const cwd = await tempRepo();
+    const calls: Array<{ url: string; method: string; body: string }> = [];
+
+    await runCli(["analyze", "--target", demoRoot, "--task", "Wire an issue tool"], {
+      cwd,
+      now
+    });
+    const result = await runCli(
+      ["publish-github", "--repo", "acme/widgets", "--pr", "17", "--token", "ghs_test"],
+      {
+        cwd,
+        fetcher: async (url, init) => {
+          const method = String(init?.method ?? "GET");
+          calls.push({
+            url: String(url),
+            method,
+            body: String(init?.body ?? "")
+          });
+
+          if (method === "GET") {
+            return new Response(
+              JSON.stringify([
+                {
+                  id: 22,
+                  body: "<!-- snitch-pr-summary -->\nold body"
+                }
+              ]),
+              { status: 200 }
+            );
+          }
+
+          return new Response(
+            JSON.stringify({
+              id: 22,
+              html_url: "https://github.com/acme/widgets/pull/17#issuecomment-22"
+            }),
+            { status: 200 }
+          );
+        }
+      }
+    );
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("Snitch updated the PR summary comment");
+    expect(calls.map((call) => call.method)).toEqual(["GET", "PATCH"]);
+    expect(calls[1]?.url).toBe("https://api.github.com/repos/acme/widgets/issues/comments/22");
+    expect(calls[1]?.body).toContain("<!-- snitch-pr-summary -->");
+    expect(calls[1]?.body).toContain("Snitch Review");
+  });
 });
 
 async function tempRepo(): Promise<string> {

@@ -110,10 +110,10 @@ on:
 The workflow can:
 
 1. check out the PR branch
-2. run `snitch analyze --base origin/main --head HEAD`
+2. run `snitch analyze --target . --task "${{ github.event.pull_request.title }}"`
 3. generate Mermaid/HTML/Markdown artifacts
 4. upload artifacts
-5. create or update a PR timeline comment
+5. run `snitch publish-github` to create or update a PR timeline comment
 
 For a normal PR timeline comment, GitHub uses the issue comments API because every pull request is also an issue:
 
@@ -122,6 +122,8 @@ POST /repos/{owner}/{repo}/issues/{issue_number}/comments
 ```
 
 Use review comments only for specific changed lines. Snitch's first artifact should be a single timeline comment.
+
+The template lives at `templates/github/snitch-pr-summary.yml`. It uses `GITHUB_TOKEN`, `GITHUB_REPOSITORY`, and `GITHUB_EVENT_PATH` from GitHub Actions, keeping GitHub write permissions out of the coding-agent runtime.
 
 ## Recommended Prototype Path
 

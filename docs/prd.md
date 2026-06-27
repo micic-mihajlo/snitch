@@ -615,12 +615,13 @@ First publishing milestone:
 - GitHub Action runs on PR open/update.
 - It runs Snitch analysis or reads `.snitch/pr-comment.md`.
 - It posts or updates one top-level PR summary comment.
+- The CLI publish bridge is `snitch publish-github`; it uses a hidden marker to update the same comment on later runs.
 
 Later milestones:
 
 - GitHub App webhook publisher
 - inline review comments
-- `/snitch publish` manual command
+- slash-command publishing
 - artifact upload with HTML graph
 
 Do not implement a GitHub MCP tool for PR publishing.

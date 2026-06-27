@@ -35,6 +35,7 @@ type RunCliOptions = {
   cwd?: string;
   stdin?: string;
   now?: Date;
+  fetcher?: typeof fetch;
 };
 
 type AgentTarget = "codex" | "cursor" | "claude" | "opencode";
@@ -144,6 +145,22 @@ type InsightOptions = {
   now: Date;
 };
 
+type GitHubComment = {
+  id: number;
+  body?: string;
+  html_url?: string;
+};
+
+type GitHubPublishOptions = {
+  owner: string;
+  repo: string;
+  issueNumber: number;
+  token: string;
+  apiUrl: string;
+  commentPath: string;
+  marker: string;
+};
+
 type MemoryArtifact = {
   generatedAt: string;
   backboard: {
@@ -221,6 +238,11 @@ export async function runCli(args: string[], options: RunCliOptions = {}): Promi
 
     if (command === "finalize") {
       const message = await finalizeSnitch(cwd, now);
+      return ok(message);
+    }
+
+    if (command === "publish-github") {
+      const message = await publishGithubComment(cwd, parsed.flags, options.fetcher ?? fetch);
       return ok(message);
     }
 
@@ -752,6 +774,139 @@ async function rememberWarningsOnFinalize(cwd: string, now: Date): Promise<Memor
 
 function formatMemoryStatus(memory: MemoryArtifact): string {
   return `- Backboard memory: ${memory.backboard.status} / ${memory.backboard.rememberedWarnings} warning decisions`;
+}
+
+async function publishGithubComment(
+  cwd: string,
+  flags: ParsedArgs["flags"],
+  fetcher: typeof fetch
+): Promise<string> {
+  const options = await resolveGithubPublishOptions(flags);
+  const artifact = await readTextIfExists(cwd, options.commentPath);
+
+  if (!artifact.trim()) {
+    throw new Error(`Missing PR comment artifact at ${options.commentPath}`);
+  }
+
+  const body = `${options.marker}\n${artifact.trim()}\n`;
+  const commentsUrl = githubApiUrl(
+    options,
+    `/repos/${options.owner}/${options.repo}/issues/${options.issueNumber}/comments`
+  );
+  const commentsResponse = await fetcher(`${commentsUrl}?per_page=100`, {
+    method: "GET",
+    headers: githubHeaders(options.token)
+  });
+
+  if (!commentsResponse.ok) {
+    throw new Error(`GitHub comments lookup failed with ${commentsResponse.status}`);
+  }
+
+  const comments = (await commentsResponse.json()) as GitHubComment[];
+  const existing = comments.find((comment) => comment.body?.includes(options.marker));
+  const publishResponse = existing
+    ? await fetcher(githubApiUrl(options, `/repos/${options.owner}/${options.repo}/issues/comments/${existing.id}`), {
+        method: "PATCH",
+        headers: githubHeaders(options.token),
+        body: JSON.stringify({ body })
+      })
+    : await fetcher(commentsUrl, {
+        method: "POST",
+        headers: githubHeaders(options.token),
+        body: JSON.stringify({ body })
+      });
+
+  if (!publishResponse.ok) {
+    throw new Error(`GitHub comment publish failed with ${publishResponse.status}`);
+  }
+
+  const published = (await publishResponse.json()) as GitHubComment;
+  const action = existing ? "updated" : "created";
+
+  return [
+    `Snitch ${action} the PR summary comment.`,
+    `- Repository: ${options.owner}/${options.repo}`,
+    `- Pull request: #${options.issueNumber}`,
+    published.html_url ? `- Comment: ${published.html_url}` : "- Comment: published"
+  ].join("\n") + "\n";
+}
+
+async function resolveGithubPublishOptions(flags: ParsedArgs["flags"]): Promise<GitHubPublishOptions> {
+  const repository = String(flags.get("repo") ?? process.env.GITHUB_REPOSITORY ?? "");
+  const [owner, repo] = repository.includes("/")
+    ? repository.split("/", 2)
+    : [
+        String(flags.get("owner") ?? ""),
+        repository || String(flags.get("name") ?? "")
+      ];
+  const issueNumber = parsePositiveInt(flags.get("pr") ?? flags.get("issue"))
+    ?? await readGithubEventIssueNumber();
+  const token = String(flags.get("token") ?? process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? "");
+  const apiUrl = String(flags.get("api-url") ?? process.env.GITHUB_API_URL ?? "https://api.github.com");
+  const commentPath = String(flags.get("comment-path") ?? ".snitch/pr-comment.md");
+  const marker = String(flags.get("marker") ?? "<!-- snitch-pr-summary -->");
+
+  if (!owner || !repo) {
+    throw new Error("Missing GitHub repository. Pass --repo owner/name or set GITHUB_REPOSITORY.");
+  }
+
+  if (!issueNumber) {
+    throw new Error("Missing pull request number. Pass --pr <number> or set GITHUB_EVENT_PATH.");
+  }
+
+  if (!token.trim()) {
+    throw new Error("Missing GitHub token. Pass --token or set GITHUB_TOKEN.");
+  }
+
+  return {
+    owner,
+    repo,
+    issueNumber,
+    token,
+    apiUrl,
+    commentPath,
+    marker
+  };
+}
+
+async function readGithubEventIssueNumber(): Promise<number | undefined> {
+  if (!process.env.GITHUB_EVENT_PATH) {
+    return undefined;
+  }
+
+  try {
+    const payload = JSON.parse(await readFile(process.env.GITHUB_EVENT_PATH, "utf8")) as {
+      pull_request?: { number?: number };
+      issue?: { number?: number };
+      number?: number;
+    };
+
+    return payload.pull_request?.number ?? payload.issue?.number ?? payload.number;
+  } catch {
+    return undefined;
+  }
+}
+
+function githubApiUrl(options: GitHubPublishOptions, path: string): string {
+  return `${options.apiUrl.replace(/\/$/, "")}${path}`;
+}
+
+function githubHeaders(token: string): HeadersInit {
+  return {
+    Accept: "application/vnd.github+json",
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
+    "X-GitHub-Api-Version": "2022-11-28"
+  };
+}
+
+function parsePositiveInt(value: string | true | undefined): number | undefined {
+  if (!value || value === true) {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 function sendJson(response: ServerResponse, status: number, value: unknown): void {
@@ -1462,7 +1617,8 @@ function helpText(): string {
     "  snitch watch [--cwd <repo>] [--port <port>] [--interval <ms>]",
     "  snitch insights [--cwd <repo>] [--offline]",
     "  snitch status [--cwd <repo>]",
-    "  snitch finalize [--cwd <repo>]"
+    "  snitch finalize [--cwd <repo>]",
+    "  snitch publish-github [--cwd <repo>] [--repo owner/name] [--pr <number>] [--token <token>]"
   ].join("\n") + "\n";
 }
 
