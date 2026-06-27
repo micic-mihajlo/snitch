@@ -21,7 +21,8 @@ import {
   type ReplaySnapshot,
   type SnitchArtifacts,
   type SnitchGraph,
-  type SnitchWarning
+  type SnitchWarning,
+  type IntegrationStatus
 } from "../../graph/src/index";
 
 type CliResult = {
@@ -36,7 +37,7 @@ type RunCliOptions = {
   now?: Date;
 };
 
-type AgentTarget = "codex" | "claude" | "opencode";
+type AgentTarget = "codex" | "cursor" | "claude" | "opencode";
 type GraphSource = "replay" | "typescript";
 
 type ParsedArgs = {
@@ -119,28 +120,26 @@ type LiveState = {
     handoff: string;
     timeline: string;
   };
-  sponsors?: SponsorArtifact;
+  insights?: InsightArtifact;
   memory?: MemoryArtifact;
 };
 
-type SponsorArtifact = {
+type InsightArtifact = {
   generatedAt: string;
   narration: string;
   cerebras: {
-    status: SponsorResultStatus;
-    triageStatus: SponsorResultStatus;
+    status: IntegrationStatus;
+    triageStatus: IntegrationStatus;
     model?: string;
   };
   backboard: {
-    status: SponsorResultStatus;
+    status: IntegrationStatus;
     rules: string[];
   };
   rankedWarnings: RankedWarning[];
 };
 
-type SponsorResultStatus = "ok" | "disabled" | "fallback";
-
-type SponsorOptions = {
+type InsightOptions = {
   offline: boolean;
   now: Date;
 };
@@ -148,7 +147,7 @@ type SponsorOptions = {
 type MemoryArtifact = {
   generatedAt: string;
   backboard: {
-    status: SponsorResultStatus;
+    status: IntegrationStatus;
     decision: "accepted";
     rememberedWarnings: number;
     warningIds: string[];
@@ -211,9 +210,9 @@ export async function runCli(args: string[], options: RunCliOptions = {}): Promi
       );
     }
 
-    if (command === "sponsors") {
+    if (command === "insights") {
       return ok(
-        await writeSponsorArtifacts(cwd, {
+        await writeInsightArtifacts(cwd, {
           offline: parsed.flags.has("offline"),
           now
         })
@@ -532,7 +531,7 @@ export async function readLiveState(cwd: string): Promise<LiveState> {
   const graph = JSON.parse(await readFile(resolve(cwd, ".snitch/graph.json"), "utf8")) as SnitchGraph;
   const warnings = await readWarnings(cwd, graph);
   const sessionText = await readTextIfExists(cwd, ".snitch/session.json");
-  const sponsorsText = await readTextIfExists(cwd, ".snitch/sponsors.json");
+  const insightsText = await readTextIfExists(cwd, ".snitch/insights.json");
   const memoryText = await readTextIfExists(cwd, ".snitch/memory.json");
   const state: LiveState = {
     ok: true,
@@ -549,8 +548,8 @@ export async function readLiveState(cwd: string): Promise<LiveState> {
     }
   };
 
-  if (sponsorsText) {
-    state.sponsors = JSON.parse(sponsorsText) as SponsorArtifact;
+  if (insightsText) {
+    state.insights = JSON.parse(insightsText) as InsightArtifact;
   }
 
   if (memoryText) {
@@ -599,15 +598,15 @@ function handleLiveEvents(cwd: string, response: ServerResponse, intervalMs: num
   });
 }
 
-async function writeSponsorArtifacts(cwd: string, options: SponsorOptions): Promise<string> {
+async function writeInsightArtifacts(cwd: string, options: InsightOptions): Promise<string> {
   const graph = JSON.parse(await readFile(resolve(cwd, ".snitch/graph.json"), "utf8")) as SnitchGraph;
   const warnings = await readWarnings(cwd, graph);
   const sessionText = await readTextIfExists(cwd, ".snitch/session.json");
   const session = sessionText ? (JSON.parse(sessionText) as { task?: string }) : {};
   const task = session.task ?? defaultTask;
   const previousGraph: SnitchGraph = {
-    id: "sponsor-baseline",
-    title: "Sponsor baseline",
+    id: "insight-baseline",
+    title: "Insight baseline",
     nodes: [],
     edges: []
   };
@@ -669,7 +668,7 @@ async function writeSponsorArtifacts(cwd: string, options: SponsorOptions): Prom
   }
 
   const warningTriage = await rankWarningsWithCerebras(warningTriageInput);
-  const artifact: SponsorArtifact = {
+  const artifact: InsightArtifact = {
     generatedAt: options.now.toISOString(),
     narration:
       cerebras.status === "disabled" || cerebras.status === "fallback"
@@ -692,14 +691,14 @@ async function writeSponsorArtifacts(cwd: string, options: SponsorOptions): Prom
     artifact.cerebras.model = warningTriage.model;
   }
 
-  await writeJson(cwd, ".snitch/sponsors.json", artifact);
+  await writeJson(cwd, ".snitch/insights.json", artifact);
 
   return [
-    "Snitch sponsor artifact written.",
+    "Snitch insights artifact written.",
     `- Cerebras: ${artifact.cerebras.status} narration / ${artifact.cerebras.triageStatus} triage${artifact.cerebras.model ? ` (${artifact.cerebras.model})` : ""}`,
     `- Backboard: ${artifact.backboard.status} / ${artifact.backboard.rules.length} rules`,
     `- Ranked warnings: ${artifact.rankedWarnings.length}`,
-    "- Updated: .snitch/sponsors.json"
+    "- Updated: .snitch/insights.json"
   ].join("\n") + "\n";
 }
 
@@ -741,7 +740,7 @@ async function rememberWarningsOnFinalize(cwd: string, now: Date): Promise<Memor
     return rememberBackboardWarningDecision(input);
   }));
   const rememberedWarnings = results.filter((result) => result.status === "ok").length;
-  const status: SponsorResultStatus =
+  const status: IntegrationStatus =
     results.length === 0 || rememberedWarnings === results.length ? "ok" : "fallback";
 
   artifact.backboard.status = status;
@@ -861,7 +860,7 @@ function hashLiveState(state: LiveState): string {
     session: state.session,
     graph: state.graph,
     warnings: state.warnings,
-    sponsors: state.sponsors,
+    insights: state.insights,
     memory: state.memory,
     artifacts: state.artifacts
   });
@@ -1155,6 +1154,10 @@ async function writeAgentConfigs(cwd: string, agents: AgentTarget[]): Promise<vo
         await writeJson(cwd, ".codex/hooks.json", createCodexHooksConfig());
       }
 
+      if (agent === "cursor") {
+        await writeText(cwd, ".cursor/rules/snitch.mdc", createCursorRule());
+      }
+
       if (agent === "claude") {
         await writeJson(cwd, ".claude/settings.local.json", createClaudeHooksConfig());
       }
@@ -1164,6 +1167,24 @@ async function writeAgentConfigs(cwd: string, agents: AgentTarget[]): Promise<vo
       }
     })
   );
+}
+
+function createCursorRule(): string {
+  return `---
+description: Use Snitch to verify AI-agent code changes with a live local system map.
+alwaysApply: false
+---
+
+# Snitch local verification
+
+Use Snitch when a task changes routes, tools, schemas, auth, permissions, external APIs, environment variables, database writes, tests, or agent-facing workflows.
+
+- Run \`pnpm snitch analyze --target . --task "<current task>"\` after meaningful implementation changes.
+- Run \`pnpm snitch insights --offline\` when provider credentials are unavailable.
+- Run \`pnpm snitch finalize\` before preparing a pull request or handoff.
+- Treat \`.snitch/graph.json\`, \`.snitch/warnings.json\`, \`.snitch/mermaid.mmd\`, \`.snitch/pr-comment.md\`, and \`.snitch/handoff.md\` as generated evidence.
+- Do not give the coding agent GitHub write access for Snitch publishing; publish artifacts through a separate workflow.
+`;
 }
 
 function createCodexHooksConfig(): unknown {
@@ -1246,6 +1267,10 @@ function generatedConfigPaths(agents: AgentTarget[]): string[] {
 
   if (agents.includes("codex")) {
     paths.push(".codex/hooks.json");
+  }
+
+  if (agents.includes("cursor")) {
+    paths.push(".cursor/rules/snitch.mdc");
   }
 
   if (agents.includes("claude")) {
@@ -1386,7 +1411,7 @@ function parseAgents(value: string | true | undefined): AgentTarget[] {
   }
 
   const rawAgents = value.split(",").map((agent) => agent.trim()).filter(Boolean);
-  const agents = rawAgents.includes("all") ? ["codex", "claude", "opencode"] : rawAgents;
+  const agents = rawAgents.includes("all") ? ["codex", "cursor", "claude", "opencode"] : rawAgents;
   const validAgents = agents.filter(isAgentTarget);
 
   return validAgents.length > 0 ? unique(validAgents) : ["codex"];
@@ -1411,7 +1436,7 @@ function parseInterval(value: string | true | undefined): number {
 }
 
 function isAgentTarget(value: string): value is AgentTarget {
-  return value === "codex" || value === "claude" || value === "opencode";
+  return value === "codex" || value === "cursor" || value === "claude" || value === "opencode";
 }
 
 function unique<T>(items: T[]): T[] {
@@ -1431,11 +1456,11 @@ function helpText(): string {
     "Snitch background companion",
     "",
     "Commands:",
-    "  snitch init [--cwd <repo>] [--agent codex|claude|opencode|all] [--target <ts-repo>] [--task <task>]",
+    "  snitch init [--cwd <repo>] [--agent codex|cursor|claude|opencode|all] [--target <ts-repo>] [--task <task>]",
     "  snitch event [--cwd <repo>] [--source <agent>] [--hook <hook>] < stdin-json",
     "  snitch analyze [--cwd <output-repo>] [--target <ts-repo>] [--task <task>]",
     "  snitch watch [--cwd <repo>] [--port <port>] [--interval <ms>]",
-    "  snitch sponsors [--cwd <repo>] [--offline]",
+    "  snitch insights [--cwd <repo>] [--offline]",
     "  snitch status [--cwd <repo>]",
     "  snitch finalize [--cwd <repo>]"
   ].join("\n") + "\n";

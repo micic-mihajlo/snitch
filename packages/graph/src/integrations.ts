@@ -21,10 +21,10 @@ export type CerebrasNarrationOptions = {
   fetcher?: typeof fetch;
 };
 
-export type SponsorResultStatus = "ok" | "disabled" | "fallback";
+export type IntegrationStatus = "ok" | "disabled" | "fallback";
 
 export type CerebrasNarrationResult = {
-  status: SponsorResultStatus;
+  status: IntegrationStatus;
   text: string;
   model?: string;
 };
@@ -40,18 +40,18 @@ export type RankedWarning = {
 };
 
 export type CerebrasWarningTriageResult = {
-  status: SponsorResultStatus;
+  status: IntegrationStatus;
   rankedWarnings: RankedWarning[];
   model?: string;
 };
 
 export type BackboardRuleResult = {
-  status: SponsorResultStatus;
+  status: IntegrationStatus;
   rules: string[];
 };
 
 export type BackboardDecisionResult = {
-  status: SponsorResultStatus;
+  status: IntegrationStatus;
 };
 
 export function createCerebrasNarrationInput(input: {

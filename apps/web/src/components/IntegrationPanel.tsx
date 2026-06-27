@@ -8,7 +8,7 @@ type Props = {
   memoryStatus: string;
 };
 
-export function SponsorLane({
+export function IntegrationPanel({
   narration,
   ruleCount,
   cerebrasStatus,
@@ -16,8 +16,8 @@ export function SponsorLane({
   memoryStatus
 }: Props) {
   return (
-    <section className="sponsor-panel" aria-label="Sponsor integration lanes">
-      <div className="sponsor-row">
+    <section className="integration-panel" aria-label="Provider integrations">
+      <div className="integration-row">
         <Zap aria-hidden="true" />
         <div>
           <h2>Cerebras</h2>
@@ -25,7 +25,7 @@ export function SponsorLane({
         </div>
       </div>
       <output className="narration">{narration}</output>
-      <div className="sponsor-row">
+      <div className="integration-row">
         <BrainCircuit aria-hidden="true" />
         <div>
           <h2>Backboard</h2>

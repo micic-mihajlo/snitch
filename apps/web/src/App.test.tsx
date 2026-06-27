@@ -10,7 +10,7 @@ describe("Snitch dashboard", () => {
     vi.unstubAllGlobals();
   });
 
-  it("renders the live tool surface, warning rail, artifact panel, and sponsor lane", () => {
+  it("renders the live tool surface, warning rail, artifact panel, and integration panel", () => {
     render(<App />);
 
     expect(screen.getByRole("heading", { name: "Snitch" })).toBeInTheDocument();
@@ -101,7 +101,7 @@ describe("Snitch dashboard", () => {
             handoff: artifacts["handoff.md"],
             timeline: artifacts["timeline.jsonl"]
           },
-          sponsors: {
+          insights: {
             generatedAt: "2026-06-27T12:00:00.000Z",
             narration: "Cerebras says the issue tool added an external API path.",
             cerebras: {

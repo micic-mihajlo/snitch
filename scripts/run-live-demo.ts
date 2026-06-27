@@ -11,7 +11,7 @@ const args = parseArgs(process.argv.slice(2));
 const target = String(args.flags.get("target") ?? "apps/demo-app");
 const appPort = String(args.flags.get("port") ?? "5187");
 const watchPort = String(args.flags.get("watch-port") ?? "4767");
-const offlineSponsors = args.flags.has("offline-sponsors");
+const offlineIntegrations = args.flags.has("offline-integrations");
 const prepareOnly = args.flags.has("prepare-only");
 const liveUrl = `http://127.0.0.1:${watchPort}`;
 
@@ -23,7 +23,7 @@ run("pnpm", [
   "--task",
   task
 ]);
-run("pnpm", ["snitch", "sponsors", ...(offlineSponsors ? ["--offline"] : [])]);
+run("pnpm", ["snitch", "insights", ...(offlineIntegrations ? ["--offline"] : [])]);
 
 if (prepareOnly) {
   console.log("Snitch live demo artifacts prepared.");

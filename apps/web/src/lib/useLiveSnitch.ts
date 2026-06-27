@@ -19,7 +19,7 @@ type LiveApiState = {
     handoff: string;
     timeline: string;
   };
-  sponsors?: {
+  insights?: {
     generatedAt: string;
     narration: string;
     cerebras: {
@@ -55,7 +55,7 @@ type LiveSnitchState = {
   snapshot?: ReplaySnapshot;
   previousSnapshot?: ReplaySnapshot;
   artifacts?: SnitchArtifacts;
-  sponsorLane?: {
+  integrationPanel?: {
     narration: string;
     ruleCount: number;
     cerebrasStatus: string;
@@ -115,23 +115,23 @@ export function useLiveSnitch(): LiveSnitchState {
             nextState.eventCount = apiState.session.eventCount;
           }
 
-          if (apiState.sponsors) {
-            nextState.sponsorLane = {
-              narration: apiState.sponsors.narration,
-              ruleCount: apiState.sponsors.backboard.rules.length,
-              cerebrasStatus: formatSponsorStatus(
-                apiState.sponsors.cerebras.status,
-                apiState.sponsors.cerebras.model
+          if (apiState.insights) {
+            nextState.integrationPanel = {
+              narration: apiState.insights.narration,
+              ruleCount: apiState.insights.backboard.rules.length,
+              cerebrasStatus: formatIntegrationStatus(
+                apiState.insights.cerebras.status,
+                apiState.insights.cerebras.model
               ),
-              backboardStatus: apiState.sponsors.backboard.status,
+              backboardStatus: apiState.insights.backboard.status,
               memoryStatus: "pending"
             };
 
             if (apiState.memory) {
-              nextState.sponsorLane.memoryStatus = `${apiState.memory.backboard.status} / ${apiState.memory.backboard.rememberedWarnings} memories`;
+              nextState.integrationPanel.memoryStatus = `${apiState.memory.backboard.status} / ${apiState.memory.backboard.rememberedWarnings} memories`;
             }
 
-            nextState.rankedWarnings = apiState.sponsors.rankedWarnings;
+            nextState.rankedWarnings = apiState.insights.rankedWarnings;
           }
 
           return nextState;
@@ -162,7 +162,7 @@ export function useLiveSnitch(): LiveSnitchState {
   return liveState;
 }
 
-function formatSponsorStatus(status: string, model?: string): string {
+function formatIntegrationStatus(status: string, model?: string): string {
   return model ? `${status} · ${model}` : status;
 }
 

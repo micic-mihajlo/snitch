@@ -123,7 +123,7 @@ The architecture has two separate planes:
 
 29. As a developer building Snitch, I want clear graph IR and event schemas, so that extractor, renderer, LLM, and publisher modules can be tested independently.
 
-30. As a maintainer, I want sponsor integrations to be optional except Cerebras, so that the MVP stays universal and shippable.
+30. As a maintainer, I want provider integrations to be optional except Cerebras, so that the MVP stays universal and shippable.
 
 ## Implementation Decisions
 
@@ -294,16 +294,16 @@ Snitch should be structured as local services and testable packages:
   - scripted patch sequence
   - deterministic demo timeline
 
-### Sponsor Integration Architecture
+### Provider Integration Architecture
 
-Sponsor integrations should be visible in the product architecture, not treated as a logo strip.
+Provider integrations should be visible in the product architecture, not treated as a logo strip.
 
 Snitch has three lanes:
 
 1. Deterministic truth lane:
    - hooks, watcher, extractor, graph diff, renderer, Mermaid, and `.snitch/` artifacts
    - owns graph nodes, graph edges, evidence, and publishable facts
-   - must work without sponsor credentials
+   - must work without provider credentials
 
 2. Cerebras semantic speed lane:
    - subscribes to graph diffs and task-contract changes from `snitchd`
@@ -793,7 +793,7 @@ Rendering and extraction:
 - Zod metadata: https://zod.dev/metadata
 - MCP tools spec: https://modelcontextprotocol.io/specification/2025-06-18/server/tools
 
-Sponsor integrations:
+Provider integrations:
 
 - Cerebras streaming: https://inference-docs.cerebras.ai/capabilities/streaming
 - Cerebras OpenAI compatibility: https://inference-docs.cerebras.ai/resources/openai

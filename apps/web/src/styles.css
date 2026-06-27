@@ -51,7 +51,7 @@ button {
 .topbar,
 .panel-heading,
 .toolbar,
-.sponsor-row {
+.integration-row {
   display: flex;
   align-items: center;
 }
@@ -163,7 +163,7 @@ h2 {
 .map-panel,
 .warning-panel,
 .timeline-panel,
-.sponsor-panel,
+.integration-panel,
 .artifact-panel {
   min-width: 0;
   border: 1px solid var(--line);
@@ -393,23 +393,23 @@ h2 {
 }
 
 .timeline-list span,
-.sponsor-panel p {
+.integration-panel p {
   color: var(--muted);
   font-size: 0.84rem;
 }
 
-.sponsor-panel {
+.integration-panel {
   display: grid;
   align-content: start;
   gap: 14px;
   padding: 14px;
 }
 
-.sponsor-row {
+.integration-row {
   gap: 10px;
 }
 
-.sponsor-row svg {
+.integration-row svg {
   color: var(--acid);
 }
 

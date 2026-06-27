@@ -36,7 +36,7 @@ describe("snitch cli", () => {
     expect(hookStats.mode & 0o111).toBeGreaterThan(0);
   });
 
-  it("can generate Codex, Claude, and OpenCode background adapter configs", async () => {
+  it("can generate Codex, Cursor, Claude, and OpenCode background adapter configs", async () => {
     const cwd = await tempRepo();
     const result = await runCli(
       ["init", "--agent", "all", "--target", demoRoot, "--task", "Wire an issue tool"],
@@ -48,11 +48,15 @@ describe("snitch cli", () => {
 
     expect(result.code).toBe(0);
     expect(result.stdout).toContain(".codex/hooks.json");
+    expect(result.stdout).toContain(".cursor/rules/snitch.mdc");
     expect(result.stdout).toContain(".claude/settings.local.json");
     expect(result.stdout).toContain(".opencode/snitch-plugin.ts");
     expect(result.stdout).toContain(`Analysis target: ${demoRoot}`);
     await expect(readFile(join(cwd, ".codex/hooks.json"), "utf8")).resolves.toContain(
       "PostToolUse"
+    );
+    await expect(readFile(join(cwd, ".cursor/rules/snitch.mdc"), "utf8")).resolves.toContain(
+      "Snitch local verification"
     );
     await expect(readFile(join(cwd, ".claude/settings.local.json"), "utf8")).resolves.toContain(
       "SNITCH_SOURCE=claude"
@@ -179,30 +183,30 @@ describe("snitch cli", () => {
     expect(state.artifacts.prComment).toContain("Snitch Review");
   });
 
-  it("writes offline sponsor artifacts for the live dashboard", async () => {
+  it("writes offline insight artifacts for the live dashboard", async () => {
     const cwd = await tempRepo();
 
     await runCli(["analyze", "--target", demoRoot, "--task", "Wire an issue tool"], {
       cwd,
       now
     });
-    const result = await runCli(["sponsors", "--offline"], {
+    const result = await runCli(["insights", "--offline"], {
       cwd,
       now: new Date("2026-06-27T12:03:00.000Z")
     });
     const state = await readLiveState(cwd);
 
     expect(result.code).toBe(0);
-    expect(result.stdout).toContain("Snitch sponsor artifact written");
+    expect(result.stdout).toContain("Snitch insights artifact written");
     expect(result.stdout).toContain("Ranked warnings: 4");
-    expect(state.sponsors?.cerebras.status).toBe("disabled");
-    expect(state.sponsors?.cerebras.triageStatus).toBe("disabled");
-    expect(state.sponsors?.backboard.status).toBe("disabled");
-    expect(state.sponsors?.rankedWarnings).toHaveLength(4);
-    expect(state.sponsors?.rankedWarnings[0]?.warningId).toBe(
+    expect(state.insights?.cerebras.status).toBe("disabled");
+    expect(state.insights?.cerebras.triageStatus).toBe("disabled");
+    expect(state.insights?.backboard.status).toBe("disabled");
+    expect(state.insights?.rankedWarnings).toHaveLength(4);
+    expect(state.insights?.rankedWarnings[0]?.warningId).toBe(
       "warning:tool_audit_log_missing:create_issue"
     );
-    expect(state.sponsors?.narration).toContain("Snitch saw 10 added nodes");
+    expect(state.insights?.narration).toContain("Snitch saw 10 added nodes");
   });
 
   it("finalizes PR-ready artifacts from the background session", async () => {

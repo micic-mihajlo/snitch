@@ -18,7 +18,7 @@ const previous = replay[2];
 const reviewSnapshot = getReviewSnapshot(replay);
 const diff = diffGraph(previous.graph, reviewSnapshot.graph);
 
-describe("Cerebras sponsor lane", () => {
+describe("Cerebras integration", () => {
   it("builds compact narration input from task, diff, warnings, and repo rules", () => {
     const input = createCerebrasNarrationInput({
       task: "Add the external issue-creation tool.",
@@ -171,7 +171,7 @@ describe("Cerebras sponsor lane", () => {
   });
 });
 
-describe("Backboard sponsor lane", () => {
+describe("Backboard integration", () => {
   it("turns memory response content into repo rules", async () => {
     const result = await loadBackboardRepoRules({
       apiKey: "test-key",

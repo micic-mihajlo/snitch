@@ -1,8 +1,8 @@
 # Snitch
 
-Background truth layer for AI coding agents.
+Local verification layer for AI coding agents.
 
-Snitch installs into a coding session as a local companion. Agent hooks feed it events in the background, Snitch keeps durable `.snitch/` state, and the visual/Markdown surfaces update from the same graph IR. The demo should feel like the codebase is becoming visible at machine speed while the agent is still working.
+Snitch installs into a coding session as a local companion for Codex, Cursor, Claude Code, OpenCode, and other agentic dev tools. Agent hooks feed it events in the background, Snitch keeps durable `.snitch/` state, and the visual/Markdown surfaces update from the same graph IR. The demo should feel like the codebase is becoming visible at machine speed while the agent is still working.
 
 ## Current MVP
 
@@ -10,14 +10,14 @@ This repo now includes a working first slice:
 
 - background CLI: `pnpm snitch init`, `event`, `status`, and `finalize`
 - generated hook adapter at `.snitch/hooks/codex-hook.mjs`
-- generated Codex, Claude Code, and OpenCode adapter configs with `--agent all`
+- generated Codex, Cursor, Claude Code, and OpenCode adapter configs with `--agent all`
 - privacy-preserving local event log at `.snitch/events.jsonl`
 - normalized event model with payload hashing and safe summaries
 - narrow TypeScript extractor for real repo graph generation
 - target-aware hook refresh: file-changing events regenerate code-derived artifacts
 - local live server: `pnpm snitch watch` serves `.snitch` artifacts to the dashboard
 - graph scope controls for all, changed, and selected-warning impact views
-- sponsor artifact lane: `pnpm snitch sponsors` writes Cerebras narration, warning ranking, repair prompts, and Backboard repo-rule status
+- insights artifact: `pnpm snitch insights` writes Cerebras narration, warning ranking, repair prompts, and Backboard repo-rule status
 - finalize memory lane: `pnpm snitch finalize` writes Backboard warning-decision memory with hashed evidence only
 - scripted repair pass: `pnpm demo:repair` adds the missing companion work and regenerates warning-free artifacts
 - one-command live demo runner: `pnpm demo:live`
@@ -25,7 +25,7 @@ This repo now includes a working first slice:
 - deterministic graph IR, hashing, diffing, and last-good-graph behavior
 - replayed issue-tool demo graph with missing companion warnings
 - Mermaid, handoff, timeline, graph JSON, and PR-comment artifact generation
-- Cerebras and Backboard sponsor lanes with graceful fallback behavior
+- Cerebras and Backboard integrations with graceful fallback behavior
 - Vite/React dashboard using React Flow for the live graph surface
 
 See [docs/strategy-2026-06-27.md](docs/strategy-2026-06-27.md) for the researched next build direction.
@@ -37,7 +37,7 @@ pnpm install
 pnpm demo:live
 ```
 
-`pnpm demo:live` prepares code-derived artifacts, writes sponsor status, starts `snitch watch` at `http://127.0.0.1:4767`, and starts the dashboard pointed at that local server. Plain `pnpm dev` stays in clean replay fallback mode. The first screen is the Snitch inspection surface: live graph, ranked warning rail, timeline, sponsor lane, and PR artifact preview.
+`pnpm demo:live` prepares code-derived artifacts, writes integration insights, starts `snitch watch` at `http://127.0.0.1:4767`, and starts the dashboard pointed at that local server. Plain `pnpm dev` stays in clean replay fallback mode. The first screen is the Snitch inspection surface: live graph, ranked warning rail, timeline, integration panel, and PR artifact preview.
 
 Useful commands:
 
@@ -45,11 +45,11 @@ Useful commands:
 pnpm snitch init --agent all --target apps/demo-app --task "Watch this coding-agent session"
 printf '{"tool_name":"apply_patch","file_path":"src/tools/create-issue.ts"}' | pnpm snitch event --source codex --hook PostToolUse
 pnpm snitch analyze --target apps/demo-app --task "Add an external issue-creation tool"
-pnpm snitch sponsors --offline
-pnpm snitch sponsors
+pnpm snitch insights --offline
+pnpm snitch insights
 pnpm snitch watch --port 4767
 pnpm dev:live
-pnpm demo:live --offline-sponsors
+pnpm demo:live --offline-integrations
 pnpm demo:repair
 pnpm snitch status
 pnpm snitch finalize
@@ -71,6 +71,7 @@ Snitch follows the Flow Guardian pattern: small local config, durable handoff st
 After `pnpm snitch init --agent all`, Snitch writes:
 
 - `.codex/hooks.json`
+- `.cursor/rules/snitch.mdc`
 - `.claude/settings.local.json`
 - `.opencode/snitch-plugin.ts`
 - `.snitch/hooks/codex-hook.mjs`
@@ -95,7 +96,7 @@ It does not store the raw hook payload. File-changing events refresh the configu
 - `.snitch/mermaid.mmd`
 - `.snitch/handoff.md`
 - `.snitch/pr-comment.md`
-- `.snitch/sponsors.json`
+- `.snitch/insights.json`
 
 `snitch finalize` also writes `.snitch/memory.json`. With Backboard credentials, it remembers active warning decisions as safe metadata and evidence hashes; without credentials, it records disabled status so the live dashboard can show the memory lane honestly.
 
@@ -131,7 +132,7 @@ The room should watch nodes and edges appear as the agent works: endpoint, schem
 
 ## Positioning
 
-Snitch is for every builder using AI coding agents. It should not be framed as an 8090-only tool or a sponsor-specific add-on.
+Snitch is a developer tool for people building with AI coding agents. It should feel first class next to Codex, Cursor, Claude Code, OpenCode, and whatever local agent runtime a team already uses.
 
 Task sources can be:
 
@@ -144,9 +145,9 @@ Task sources can be:
 
 8090 is an optional rich task-source adapter. The core product is local-first and agent-agnostic.
 
-## Sponsor Use
+## Provider Integrations
 
-Use sponsors where they make the demo visibly better.
+Use providers where they make the developer loop visibly better.
 
 ### Cerebras
 
@@ -391,9 +392,9 @@ Research only the decisions that affect the first build.
    - SSE vs WebSocket
    - debounce strategy for agent file storms
 5. Agent demo input:
-   - Codex / Claude Code / OpenCode local run
+   - Codex / Cursor / Claude Code / OpenCode local run
    - scripted patch replay fallback
-6. Sponsor integrations:
+6. Provider integrations:
    - Cerebras structured JSON response API shape
    - Backboard memory/R-CLI role
    - 8090 MCP work-order import/export shape

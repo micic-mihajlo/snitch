@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a working local-first Snitch prototype that turns a replayed/observed agent code change into a live graph, warnings, Mermaid, Markdown artifacts, and sponsor-backed narration/memory hooks.
+**Goal:** Build a working local-first Snitch prototype that turns a replayed/observed agent code change into a live graph, warnings, Mermaid, Markdown artifacts, and provider-backed narration/memory hooks.
 
 **Architecture:** The MVP is a TypeScript monorepo with a deterministic core package and a Vite React dashboard. The graph IR owns truth; Cerebras and Backboard enrich the experience without owning graph facts.
 
@@ -15,16 +15,16 @@
 - Create `package.json`: workspace scripts for build, test, lint, typecheck, demo artifact generation.
 - Create `pnpm-workspace.yaml`: workspace package globs.
 - Create `tsconfig.base.json`: shared TypeScript compiler options.
-- Create `packages/graph/src/types.ts`: graph IR, events, warnings, artifacts, sponsor result types.
+- Create `packages/graph/src/types.ts`: graph IR, events, warnings, artifacts, integration result types.
 - Create `packages/graph/src/diff.ts`: stable graph diff engine.
 - Create `packages/graph/src/replay.ts`: deterministic demo snapshots and warning candidates.
 - Create `packages/graph/src/mermaid.ts`: graph-to-Mermaid exporter.
 - Create `packages/graph/src/artifacts.ts`: `.snitch/` artifact generation helpers.
-- Create `packages/graph/src/sponsors.ts`: Cerebras/Backboard client wrappers and graceful fallbacks.
+- Create `packages/graph/src/integrations.ts`: Cerebras/Backboard client wrappers and graceful fallbacks.
 - Create `packages/graph/src/index.ts`: public package exports.
-- Create `packages/graph/src/*.test.ts`: Vitest coverage for diffing, Mermaid, artifacts, and sponsor fallback behavior.
+- Create `packages/graph/src/*.test.ts`: Vitest coverage for diffing, Mermaid, artifacts, and integration fallback behavior.
 - Create `apps/web/src/App.tsx`: live Snitch dashboard and replay orchestration.
-- Create `apps/web/src/components/*`: graph canvas, warning rail, timeline, artifact panel, sponsor lane.
+- Create `apps/web/src/components/*`: graph canvas, warning rail, timeline, artifact panel, integration panel.
 - Create `apps/web/src/lib/*`: replay state and browser-safe artifact helpers.
 - Create `apps/web/src/styles.css`: industrial/utilitarian visual system.
 - Create `apps/web/src/App.test.tsx`: smoke tests for dashboard rendering and warning interactions.
@@ -32,7 +32,7 @@
 - Create `scripts/generate-demo-artifacts.ts`: writes `.snitch/session.json`, `.snitch/graph.json`, `.snitch/timeline.jsonl`, `.snitch/mermaid.mmd`, `.snitch/handoff.md`, and `.snitch/pr-comment.md`.
 - Create `scripts/smoke-cerebras.ts`: optional Cerebras smoke test using `.env`.
 - Create `scripts/smoke-backboard.ts`: optional Backboard smoke test using `.env`.
-- Modify `README.md`: add install, run, test, demo artifact, and sponsor smoke commands.
+- Modify `README.md`: add install, run, test, demo artifact, and provider smoke commands.
 - Modify `.env.example`: add `CEREBRAS_MODEL` and document optional dedicated endpoint IDs.
 
 ## Task 1: Project Foundation And Graph Core
@@ -136,17 +136,17 @@ Run:
 
 Commit message: `feat: generate snitch artifacts`
 
-## Task 3: Sponsor Integration Clients
+## Task 3: Provider Integration Clients
 
 **Files:**
-- Create: `packages/graph/src/sponsors.test.ts`
-- Create: `packages/graph/src/sponsors.ts`
+- Create: `packages/graph/src/integrations.test.ts`
+- Create: `packages/graph/src/integrations.ts`
 - Modify: `packages/graph/src/index.ts`
 - Create: `scripts/smoke-cerebras.ts`
 - Create: `scripts/smoke-backboard.ts`
 - Modify: `.env.example`
 
-- [x] **Step 1: Write failing sponsor tests**
+- [x] **Step 1: Write failing provider tests**
 
 Create tests that prove:
 - Cerebras prompt builder receives task intent, graph diff, warnings, and repo rules
@@ -154,10 +154,10 @@ Create tests that prove:
 - Backboard repo rules can be converted into warning context
 - missing credentials return disabled results without throwing
 
-Run: `pnpm --filter @snitch/graph test -- src/sponsors.test.ts`
-Expected before implementation: fails because sponsor helpers do not exist.
+Run: `pnpm --filter @snitch/graph test -- src/integrations.test.ts`
+Expected before implementation: fails because provider helpers do not exist.
 
-- [x] **Step 2: Implement sponsor helpers**
+- [x] **Step 2: Implement provider helpers**
 
 Add:
 - `createCerebrasNarrationInput`
@@ -177,11 +177,11 @@ Network calls must be injectable for tests and must never block deterministic gr
 - [x] **Step 4: Verify and commit**
 
 Run:
-- `pnpm --filter @snitch/graph test -- src/sponsors.test.ts`
+- `pnpm --filter @snitch/graph test -- src/integrations.test.ts`
 - `pnpm smoke:cerebras`
 - `pnpm smoke:backboard`
 
-Commit message: `feat: wire sponsor integrations`
+Commit message: `feat: wire provider integrations`
 
 ## Task 4: Live Web Dashboard
 
@@ -197,14 +197,14 @@ Commit message: `feat: wire sponsor integrations`
 - Create: `apps/web/src/components/WarningRail.tsx`
 - Create: `apps/web/src/components/Timeline.tsx`
 - Create: `apps/web/src/components/ArtifactPanel.tsx`
-- Create: `apps/web/src/components/SponsorLane.tsx`
+- Create: `apps/web/src/components/IntegrationPanel.tsx`
 - Create: `apps/web/src/lib/useReplay.ts`
 - Create: `apps/web/src/styles.css`
 
 - [x] **Step 1: Write failing dashboard tests**
 
 Create tests that prove:
-- the dashboard renders Snitch, replay controls, graph surface, warning rail, and sponsor lane
+- the dashboard renders Snitch, replay controls, graph surface, warning rail, and integration panel
 - clicking a warning displays a repair prompt
 - replay advances through snapshots without blanking the graph
 
@@ -223,7 +223,7 @@ UI requirements:
 - warning rail with clickable repair prompts
 - timeline of graph diffs
 - artifact preview with Mermaid and PR comment
-- sponsor lane showing Cerebras and Backboard status
+- integration panel showing Cerebras and Backboard status
 
 - [x] **Step 3: Verify and commit**
 

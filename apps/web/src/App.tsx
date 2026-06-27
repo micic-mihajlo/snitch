@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { buildSnitchArtifacts, createStaticNarration, diffGraph, type SnitchWarning } from "@snitch/graph";
 import { ArtifactPanel } from "./components/ArtifactPanel";
 import { GraphCanvas } from "./components/GraphCanvas";
-import { SponsorLane } from "./components/SponsorLane";
+import { IntegrationPanel } from "./components/IntegrationPanel";
 import { Timeline } from "./components/Timeline";
 import { WarningRail } from "./components/WarningRail";
 import { scopeGraph, type GraphScope } from "./lib/graphScope";
@@ -56,7 +56,7 @@ export default function App() {
     () => createStaticNarration(diff, rankedWarnings),
     [rankedWarnings, diff]
   );
-  const sponsorLane = live.sponsorLane ?? {
+  const integrationPanel = live.integrationPanel ?? {
     narration,
     ruleCount: 0,
     cerebrasStatus: "static fallback",
@@ -170,12 +170,12 @@ export default function App() {
           snapshots={visibleSnapshots}
           currentSnapshotId={currentSnapshot.id}
         />
-        <SponsorLane
-          narration={sponsorLane.narration}
-          ruleCount={sponsorLane.ruleCount}
-          cerebrasStatus={sponsorLane.cerebrasStatus}
-          backboardStatus={sponsorLane.backboardStatus}
-          memoryStatus={sponsorLane.memoryStatus}
+        <IntegrationPanel
+          narration={integrationPanel.narration}
+          ruleCount={integrationPanel.ruleCount}
+          cerebrasStatus={integrationPanel.cerebrasStatus}
+          backboardStatus={integrationPanel.backboardStatus}
+          memoryStatus={integrationPanel.memoryStatus}
         />
         <ArtifactPanel artifacts={artifacts} />
       </section>
