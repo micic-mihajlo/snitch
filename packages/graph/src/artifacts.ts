@@ -1,6 +1,13 @@
 import { diffGraph } from "./diff";
 import { graphToMermaid } from "./mermaid";
-import type { ReplaySnapshot, SnitchArtifactInput, SnitchArtifacts, SnitchWarning } from "./types";
+import type {
+  GraphNode,
+  NodeKind,
+  ReplaySnapshot,
+  SnitchArtifactInput,
+  SnitchArtifacts,
+  SnitchWarning
+} from "./types";
 
 export function buildSnitchArtifacts(input: SnitchArtifactInput): SnitchArtifacts {
   const mermaid = graphToMermaid(input.reviewSnapshot.graph);
@@ -60,11 +67,9 @@ function buildHandoff(snapshot: ReplaySnapshot, task: string): string {
     "",
     "## System Impact",
     "",
-    `- Nodes: ${snapshot.graph.nodes.length}`,
-    `- Edges: ${snapshot.graph.edges.length}`,
-    `- Warnings: ${snapshot.warnings.length}`,
+    ...formatImpactBullets(snapshot),
     "",
-    "## Missing companion warnings",
+    "## Active warnings",
     "",
     ...formatWarningBullets(snapshot.warnings)
   ].join("\n");
@@ -74,7 +79,11 @@ function buildPrComment(snapshot: ReplaySnapshot, mermaid: string): string {
   return [
     "## Snitch Review",
     "",
-    "Snitch detected an external issue-creation capability and checked for companion safety work.",
+    "Snitch generated a code-derived system map for this change and checked active warning contracts.",
+    "",
+    "### System Impact",
+    "",
+    ...formatImpactBullets(snapshot),
     "",
     "```mermaid",
     mermaid,
@@ -85,6 +94,74 @@ function buildPrComment(snapshot: ReplaySnapshot, mermaid: string): string {
     ...formatWarningBullets(snapshot.warnings)
   ].join("\n");
 }
+
+function formatImpactBullets(snapshot: ReplaySnapshot): string[] {
+  const graph = snapshot.graph;
+  const lines = [
+    `- Graph: ${graph.nodes.length} nodes, ${graph.edges.length} edges`,
+    `- Active warnings: ${formatWarningSummary(snapshot.warnings)}`
+  ];
+
+  for (const group of impactGroups) {
+    const matchingNodes = graph.nodes
+      .filter((node) => group.kinds.includes(node.kind))
+      .sort((left, right) => left.id.localeCompare(right.id));
+
+    if (matchingNodes.length === 0) {
+      continue;
+    }
+
+    lines.push(`- ${group.title}: ${formatNodeList(matchingNodes)}`);
+  }
+
+  return lines;
+}
+
+function formatWarningSummary(warnings: SnitchWarning[]): string {
+  if (warnings.length === 0) {
+    return "none";
+  }
+
+  const counts = new Map<SnitchWarning["severity"], number>();
+
+  for (const warning of warnings) {
+    counts.set(warning.severity, (counts.get(warning.severity) ?? 0) + 1);
+  }
+
+  const severityText = ["high", "medium", "low", "info"]
+    .flatMap((severity) => {
+      const count = counts.get(severity as SnitchWarning["severity"]) ?? 0;
+      return count > 0 ? [`${count} ${severity}`] : [];
+    })
+    .join(", ");
+
+  return `${warnings.length}${severityText ? ` (${severityText})` : ""}`;
+}
+
+function formatNodeList(nodes: GraphNode[]): string {
+  const shown = nodes.slice(0, 4).map(formatNode);
+  const hiddenCount = nodes.length - shown.length;
+
+  return hiddenCount > 0 ? `${shown.join(", ")}, +${hiddenCount} more` : shown.join(", ");
+}
+
+function formatNode(node: GraphNode): string {
+  const location = node.file ? ` (${node.file}${node.line ? `:${node.line}` : ""})` : "";
+  return `${node.label}${location}`;
+}
+
+const impactGroups: Array<{ title: string; kinds: NodeKind[] }> = [
+  { title: "Agent surfaces", kinds: ["agent"] },
+  { title: "Endpoints", kinds: ["endpoint"] },
+  { title: "Tools", kinds: ["tool"] },
+  { title: "Schemas", kinds: ["schema"] },
+  { title: "External systems", kinds: ["external"] },
+  { title: "Environment", kinds: ["env"] },
+  { title: "Data stores", kinds: ["database"] },
+  { title: "Services", kinds: ["service"] },
+  { title: "Contracts", kinds: ["contract"] },
+  { title: "Tests", kinds: ["test"] }
+];
 
 function formatWarningBullets(warnings: SnitchWarning[]): string[] {
   if (warnings.length === 0) {

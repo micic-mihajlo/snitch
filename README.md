@@ -27,6 +27,7 @@ This repo now includes a working first slice:
 - CI/local enforcement gate: `pnpm snitch check` exits nonzero when warnings meet a severity threshold
 - finalize memory lane: `pnpm snitch finalize` writes Backboard warning-decision memory with hashed evidence only
 - PR publish bridge: `pnpm snitch publish-github` posts or updates one top-level GitHub PR comment from `.snitch/pr-comment.md`
+- dynamic PR and handoff summaries generated from the actual graph, not demo-only copy
 - scripted repair pass: `pnpm demo:repair` adds the missing companion work and regenerates warning-free artifacts
 - one-command live demo runner: `pnpm demo:live`
 - prepared demo assistant app under `apps/demo-app`
