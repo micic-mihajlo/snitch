@@ -75,10 +75,62 @@ export function useLiveSnitch(): LiveSnitchState {
 
   useEffect(() => {
     let disposed = false;
+    let eventSource: EventSource | undefined;
     const liveUrl = liveServerUrl();
 
     if (!liveUrl) {
       return;
+    }
+
+    function applyApiState(apiState: LiveApiState): void {
+      if (!apiState.ok || disposed) {
+        return;
+      }
+
+      const snapshot = toSnapshot(apiState);
+      const artifacts = toArtifacts(apiState);
+
+      setLiveState((current) => {
+        const sameGraph = current.snapshot
+          ? graphSignature(current.snapshot.graph) === graphSignature(snapshot.graph)
+          : false;
+        const nextState: LiveSnitchState = {
+          status: "live",
+          snapshot,
+          previousSnapshot: sameGraph
+            ? current.previousSnapshot ?? current.snapshot ?? snapshot
+            : current.snapshot ?? snapshot,
+          artifacts,
+          graphSourceLabel: apiState.session?.graphSource
+            ? `live ${apiState.session.graphSource}`
+            : "live artifacts"
+        };
+
+        if (typeof apiState.session?.eventCount === "number") {
+          nextState.eventCount = apiState.session.eventCount;
+        }
+
+        if (apiState.insights) {
+          nextState.integrationPanel = {
+            narration: apiState.insights.narration,
+            ruleCount: apiState.insights.backboard.rules.length,
+            cerebrasStatus: formatIntegrationStatus(
+              apiState.insights.cerebras.status,
+              apiState.insights.cerebras.model
+            ),
+            backboardStatus: apiState.insights.backboard.status,
+            memoryStatus: "pending"
+          };
+
+          if (apiState.memory) {
+            nextState.integrationPanel.memoryStatus = `${apiState.memory.backboard.status} / ${apiState.memory.backboard.rememberedWarnings} memories`;
+          }
+
+          nextState.rankedWarnings = apiState.insights.rankedWarnings;
+        }
+
+        return nextState;
+      });
     }
 
     async function refreshLiveState(): Promise<void> {
@@ -92,50 +144,7 @@ export function useLiveSnitch(): LiveSnitchState {
         }
 
         const apiState = (await response.json()) as LiveApiState;
-
-        if (!apiState.ok || disposed) {
-          return;
-        }
-
-        const snapshot = toSnapshot(apiState);
-        const artifacts = toArtifacts(apiState);
-
-        setLiveState((current) => {
-          const nextState: LiveSnitchState = {
-            status: "live",
-            snapshot,
-            previousSnapshot: current.snapshot ?? snapshot,
-            artifacts,
-            graphSourceLabel: apiState.session?.graphSource
-              ? `live ${apiState.session.graphSource}`
-              : "live artifacts"
-          };
-
-          if (typeof apiState.session?.eventCount === "number") {
-            nextState.eventCount = apiState.session.eventCount;
-          }
-
-          if (apiState.insights) {
-            nextState.integrationPanel = {
-              narration: apiState.insights.narration,
-              ruleCount: apiState.insights.backboard.rules.length,
-              cerebrasStatus: formatIntegrationStatus(
-                apiState.insights.cerebras.status,
-                apiState.insights.cerebras.model
-              ),
-              backboardStatus: apiState.insights.backboard.status,
-              memoryStatus: "pending"
-            };
-
-            if (apiState.memory) {
-              nextState.integrationPanel.memoryStatus = `${apiState.memory.backboard.status} / ${apiState.memory.backboard.rememberedWarnings} memories`;
-            }
-
-            nextState.rankedWarnings = apiState.insights.rankedWarnings;
-          }
-
-          return nextState;
-        });
+        applyApiState(apiState);
       } catch {
         if (!disposed) {
           setLiveState((current) =>
@@ -151,10 +160,27 @@ export function useLiveSnitch(): LiveSnitchState {
     }
 
     void refreshLiveState();
-    const interval = window.setInterval(() => void refreshLiveState(), 1000);
+    const hasEventSource = typeof EventSource !== "undefined";
+
+    if (hasEventSource) {
+      eventSource = new EventSource(`${liveUrl}/api/events`);
+      eventSource.addEventListener("state", (event) => {
+        try {
+          applyApiState(JSON.parse((event as MessageEvent<string>).data) as LiveApiState);
+        } catch {
+          void refreshLiveState();
+        }
+      });
+      eventSource.addEventListener("error", () => {
+        void refreshLiveState();
+      });
+    }
+
+    const interval = window.setInterval(() => void refreshLiveState(), hasEventSource ? 3000 : 1000);
 
     return () => {
       disposed = true;
+      eventSource?.close();
       window.clearInterval(interval);
     };
   }, []);
@@ -194,4 +220,11 @@ function toArtifacts(apiState: LiveApiState): SnitchArtifacts {
     "handoff.md": apiState.artifacts.handoff,
     "pr-comment.md": apiState.artifacts.prComment
   };
+}
+
+function graphSignature(graph: SnitchGraph): string {
+  return JSON.stringify({
+    nodes: graph.nodes.map((node) => `${node.id}:${node.hash}`).sort(),
+    edges: graph.edges.map((edge) => `${edge.id}:${edge.hash}`).sort()
+  });
 }
