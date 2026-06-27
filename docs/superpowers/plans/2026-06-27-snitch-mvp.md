@@ -49,7 +49,7 @@
 - Create: `packages/graph/src/diff.ts`
 - Create: `packages/graph/src/index.ts`
 
-- [ ] **Step 1: Write failing graph diff tests**
+- [x] **Step 1: Write failing graph diff tests**
 
 Create tests that prove:
 - added, removed, changed, and unchanged nodes are classified by stable ID and hash
@@ -59,7 +59,7 @@ Create tests that prove:
 Run: `pnpm --filter @snitch/graph test -- src/diff.test.ts`
 Expected before implementation: fails because `diffGraph` and `keepLastGoodGraph` do not exist.
 
-- [ ] **Step 2: Implement graph types and diff engine**
+- [x] **Step 2: Implement graph types and diff engine**
 
 Define `SnitchGraph`, `GraphNode`, `GraphEdge`, `GraphDiff`, `GraphUpdateResult`, and helpers:
 - `diffGraph(previous, next)`
@@ -71,7 +71,7 @@ Rules:
 - Hashes carry evidence changes.
 - Failed updates return the previous graph plus a warning event.
 
-- [ ] **Step 3: Verify graph package**
+- [x] **Step 3: Verify graph package**
 
 Run:
 - `pnpm --filter @snitch/graph test -- src/diff.test.ts`
@@ -79,7 +79,7 @@ Run:
 
 Expected: tests and typecheck pass.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 Commit message: `feat: add graph core`
 

@@ -1,0 +1,22 @@
+{
+  "name": "snitch",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.7.0",
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "dev": "pnpm --filter @snitch/web dev",
+    "demo:artifacts": "tsx scripts/generate-demo-artifacts.ts",
+    "smoke:cerebras": "tsx scripts/smoke-cerebras.ts",
+    "smoke:backboard": "tsx scripts/smoke-backboard.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.7",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  }
+}
