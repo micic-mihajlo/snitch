@@ -1,4 +1,4 @@
-import { cp, mkdtemp, readFile, rm } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -84,5 +84,81 @@ describe("extractTypeScriptGraph", () => {
     await expect(readFile(join(artifactsDir, "pr-comment.md"), "utf8")).resolves.toContain(
       "No active Snitch warnings."
     );
+  });
+
+  it("extracts generic route handlers, tool objects, schemas, external calls, and env vars", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "snitch-generic-extractor-"));
+    tempDirs.push(tempRoot);
+    await mkdir(join(tempRoot, "src/app/api/messages"), { recursive: true });
+    await mkdir(join(tempRoot, "src/tools"), { recursive: true });
+    await writeFile(
+      join(tempRoot, "src/app/api/messages/route.ts"),
+      [
+        "export async function GET() {",
+        "  await fetch(\"https://api.openai.com/v1/models\");",
+        "  return Response.json({ ok: true });",
+        "}",
+        "",
+        "export async function POST() {",
+        "  await fetch(\"https://api.openai.com/v1/responses\", {",
+        "    headers: { authorization: `Bearer ${process.env.OPENAI_API_KEY}` }",
+        "  });",
+        "  return Response.json({ ok: true });",
+        "}",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+    await writeFile(
+      join(tempRoot, "src/tools/slack.ts"),
+      [
+        "import { z } from \"zod\";",
+        "export const postSlackMessageInputSchema = z.object({",
+        "  channel: z.string(),",
+        "  text: z.string()",
+        "});",
+        "export const slackTool = {",
+        "  name: \"post_slack_message\",",
+        "  inputSchema: postSlackMessageInputSchema,",
+        "  async execute(input: unknown) {",
+        "    await fetch(\"https://hooks.slack.com/services/T000/B000/XXX\", {",
+        "      method: \"POST\",",
+        "      headers: { authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },",
+        "      body: JSON.stringify(input)",
+        "    });",
+        "  }",
+        "};",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const result = extractTypeScriptGraph({ cwd: tempRoot });
+    const nodeIds = result.snapshot.graph.nodes.map((node) => node.id);
+    const edgeIds = result.snapshot.graph.edges.map((edge) => edge.id);
+
+    expect(nodeIds).toEqual(
+      expect.arrayContaining([
+        "endpoint:GET:/api/messages",
+        "endpoint:POST:/api/messages",
+        "tool:post_slack_message",
+        "schema:post_slack_message_input",
+        "external:api.openai.com",
+        "external:hooks.slack.com",
+        "env:OPENAI_API_KEY",
+        "env:SLACK_BOT_TOKEN"
+      ])
+    );
+    expect(edgeIds).toEqual(
+      expect.arrayContaining([
+        "edge:endpoint_get_api_messages-calls-external_api_openai_com",
+        "edge:endpoint_post_api_messages-calls-external_api_openai_com",
+        "edge:endpoint_post_api_messages-uses-env_openai_api_key",
+        "edge:tool_post_slack_message-validates-schema_post_slack_message_input",
+        "edge:tool_post_slack_message-calls-external_hooks_slack_com",
+        "edge:tool_post_slack_message-uses-env_slack_bot_token"
+      ])
+    );
+    expect(edgeIds).not.toContain("edge:endpoint_get_api_messages-uses-env_openai_api_key");
   });
 });

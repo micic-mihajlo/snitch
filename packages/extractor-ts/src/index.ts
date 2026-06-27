@@ -35,6 +35,14 @@ type MutableGraph = {
   nodes: Map<string, GraphNode>;
   edges: Map<string, GraphEdge>;
   warnings: SnitchWarning[];
+  externalAccesses: GraphAccess[];
+  envAccesses: GraphAccess[];
+};
+
+type GraphAccess = {
+  nodeId: string;
+  file: string;
+  line: number;
 };
 
 export function extractTypeScriptGraph(options: ExtractTypeScriptGraphOptions): ExtractTypeScriptGraphResult {
@@ -61,10 +69,13 @@ export function extractTypeScriptGraph(options: ExtractTypeScriptGraphOptions): 
   const graph: MutableGraph = {
     nodes: new Map(),
     edges: new Map(),
-    warnings: []
+    warnings: [],
+    externalAccesses: [],
+    envAccesses: []
   };
 
   for (const sourceFile of project.getSourceFiles()) {
+    extractRouteSurface(options.cwd, sourceFile, graph);
     extractAssistantSurface(options.cwd, sourceFile, graph);
     extractToolSurface(options.cwd, sourceFile, graph);
     extractSchemaSurface(options.cwd, sourceFile, graph);
@@ -74,6 +85,7 @@ export function extractTypeScriptGraph(options: ExtractTypeScriptGraphOptions): 
   }
 
   connectKnownIssueTool(graph);
+  connectFileLocalSurfaces(graph);
   attachMissingCompanionWarnings(graph);
 
   const snitchGraph: SnitchGraph = {
@@ -99,6 +111,37 @@ export function extractTypeScriptGraph(options: ExtractTypeScriptGraphOptions): 
   };
 
   return { snapshot };
+}
+
+function extractRouteSurface(cwd: string, sourceFile: SourceFile, graph: MutableGraph): void {
+  const file = relativePath(cwd, sourceFile);
+  const routePath = routePathFromFile(file);
+
+  if (!routePath) {
+    return;
+  }
+
+  for (const handler of sourceFile.getFunctions()) {
+    const method = handler.getName();
+
+    if (!method || !httpMethods.has(method)) {
+      continue;
+    }
+
+    addNode(graph, {
+      id: `endpoint:${method}:${routePath}`,
+      kind: "endpoint",
+      label: `${method} ${routePath}`,
+      file,
+      line: handler.getStartLineNumber(),
+      meta: {
+        endLine: handler.getEndLineNumber(),
+        method,
+        route: routePath,
+        runtime: "next-route-handler"
+      }
+    });
+  }
 }
 
 function extractAssistantSurface(cwd: string, sourceFile: SourceFile, graph: MutableGraph): void {
@@ -142,16 +185,20 @@ function extractToolSurface(cwd: string, sourceFile: SourceFile, graph: MutableG
     const objectLiteral = variable.getInitializerIfKind(SyntaxKind.ObjectLiteralExpression);
     const toolName = objectLiteral ? getStringProperty(objectLiteral, "name") : undefined;
 
-    if (toolName === "create_issue" || variable.getName() === "createIssueTool") {
+    if ((toolName && looksLikeToolObject(variable, objectLiteral)) || variable.getName() === "createIssueTool") {
+      const canonicalToolName = toolName ?? "create_issue";
+      const toolId = toolIdForName(canonicalToolName);
       addNode(graph, {
-        id: "tool:create_issue",
+        id: toolId,
         kind: "tool",
-        label: "Create issue tool",
+        label: toolLabel(canonicalToolName),
         file,
         line: variable.getStartLineNumber(),
         meta: {
+          endLine: variable.getEndLineNumber(),
           symbol: variable.getName(),
-          capability: "external issue creation"
+          capability: inferToolCapability(canonicalToolName),
+          inputSchemaSymbol: objectLiteral ? getExpressionPropertyText(objectLiteral, "inputSchema") : undefined
         }
       });
     }
@@ -164,11 +211,12 @@ function extractSchemaSurface(cwd: string, sourceFile: SourceFile, graph: Mutabl
   for (const variable of sourceFile.getVariableDeclarations()) {
     const name = variable.getName();
 
-    if (name === "createIssueInputSchema") {
+    if (looksLikeZodSchema(variable)) {
+      const schemaId = schemaIdForName(name);
       addNode(graph, {
-        id: "schema:create_issue_input",
+        id: schemaId,
         kind: "schema",
-        label: "CreateIssueInput schema",
+        label: schemaLabel(name),
         file,
         line: variable.getStartLineNumber(),
         meta: {
@@ -190,16 +238,18 @@ function extractProviderSurface(cwd: string, sourceFile: SourceFile, graph: Muta
       const host = url ? safeHost(url) : undefined;
 
       if (host) {
+        const line = call.getStartLineNumber();
         addNode(graph, {
           id: `external:${host}`,
           kind: "external",
           label: `${host} API`,
           file,
-          line: call.getStartLineNumber(),
+          line,
           meta: {
             url
           }
         });
+        graph.externalAccesses.push({ nodeId: `external:${host}`, file, line });
       }
     }
   }
@@ -209,17 +259,19 @@ function extractProviderSurface(cwd: string, sourceFile: SourceFile, graph: Muta
 
     if (text.startsWith("process.env.")) {
       const envName = text.replace("process.env.", "");
+      const line = propertyAccess.getStartLineNumber();
 
       addNode(graph, {
         id: `env:${envName}`,
         kind: "env",
         label: envName,
         file,
-        line: propertyAccess.getStartLineNumber(),
+        line,
         meta: {
           exposure: envName.startsWith("PUBLIC_") ? "public" : "server"
         }
       });
+      graph.envAccesses.push({ nodeId: `env:${envName}`, file, line });
     }
   }
 }
@@ -380,6 +432,66 @@ function connectKnownIssueTool(graph: MutableGraph): void {
   }
 }
 
+function connectFileLocalSurfaces(graph: MutableGraph): void {
+  const nodes = [...graph.nodes.values()];
+  const actors = nodes.filter((node) => node.kind === "tool" || node.kind === "endpoint");
+  const schemas = nodes.filter((node) => node.kind === "schema");
+
+  for (const actor of actors) {
+    if (!actor.file) {
+      continue;
+    }
+
+    if (actor.kind === "tool" && typeof actor.meta?.inputSchemaSymbol === "string") {
+      const schema = schemas.find((candidate) => candidate.meta?.symbol === actor.meta?.inputSchemaSymbol);
+
+      if (schema) {
+        addEdgeIfMissing(
+          graph,
+          `edge:${edgeIdPart(actor.id)}-validates-${edgeIdPart(schema.id)}`,
+          actor.id,
+          schema.id,
+          "validates"
+        );
+      }
+    }
+
+    for (const external of graph.externalAccesses.filter((access) => isAccessInActorRange(actor, access))) {
+      addEdgeIfMissing(
+        graph,
+        `edge:${edgeIdPart(actor.id)}-calls-${edgeIdPart(external.nodeId)}`,
+        actor.id,
+        external.nodeId,
+        "calls"
+      );
+    }
+
+    for (const envVar of graph.envAccesses.filter((access) => isAccessInActorRange(actor, access))) {
+      addEdgeIfMissing(
+        graph,
+        `edge:${edgeIdPart(actor.id)}-uses-${edgeIdPart(envVar.nodeId)}`,
+        actor.id,
+        envVar.nodeId,
+        "uses_secret"
+      );
+    }
+  }
+}
+
+function isAccessInActorRange(actor: GraphNode, access: GraphAccess): boolean {
+  if (access.file !== actor.file) {
+    return false;
+  }
+
+  const endLine = typeof actor.meta?.endLine === "number" ? actor.meta.endLine : actor.line;
+
+  if (!actor.line || !endLine) {
+    return true;
+  }
+
+  return access.line >= actor.line && access.line <= endLine;
+}
+
 function attachMissingCompanionWarnings(graph: MutableGraph): void {
   if (!graph.nodes.has("tool:create_issue")) {
     return;
@@ -468,6 +580,16 @@ function getStringProperty(objectLiteral: ObjectLiteralExpression, name: string)
   return getStringLiteralValue(property.getInitializer());
 }
 
+function getExpressionPropertyText(objectLiteral: ObjectLiteralExpression, name: string): string | undefined {
+  const property = objectLiteral.getProperty(name);
+
+  if (!property || !Node.isPropertyAssignment(property)) {
+    return undefined;
+  }
+
+  return property.getInitializer()?.getText();
+}
+
 function getStringLiteralValue(node: TsMorphNode | undefined): string | undefined {
   if (!node) {
     return undefined;
@@ -486,6 +608,87 @@ function safeHost(url: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+const httpMethods = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
+
+function routePathFromFile(file: string): string | undefined {
+  const normalized = file.replaceAll("\\", "/");
+  const match = normalized.match(/^(?:src\/)?app\/api\/(.+)\/route\.[cm]?[tj]sx?$/);
+
+  if (!match?.[1]) {
+    return undefined;
+  }
+
+  return `/api/${match[1]}`;
+}
+
+function looksLikeZodSchema(variable: VariableDeclaration): boolean {
+  const name = variable.getName();
+  const initializerText = variable.getInitializer()?.getText() ?? "";
+
+  return /schema$/i.test(name) && /\bz\.object\s*\(/.test(initializerText);
+}
+
+function looksLikeToolObject(
+  variable: VariableDeclaration,
+  objectLiteral: ObjectLiteralExpression | undefined
+): boolean {
+  if (!objectLiteral) {
+    return false;
+  }
+
+  const variableName = variable.getName().toLowerCase();
+
+  return variableName.includes("tool")
+    || Boolean(objectLiteral.getProperty("execute"))
+    || Boolean(objectLiteral.getProperty("inputSchema"));
+}
+
+function toolIdForName(name: string): string {
+  return `tool:${slugId(name)}`;
+}
+
+function schemaIdForName(name: string): string {
+  return `schema:${slugId(name.replace(/Schema$/i, ""))}`;
+}
+
+function toolLabel(name: string): string {
+  if (name === "create_issue") {
+    return "Create issue tool";
+  }
+
+  return `${humanizeId(name)} tool`;
+}
+
+function schemaLabel(name: string): string {
+  if (name === "createIssueInputSchema") {
+    return "CreateIssueInput schema";
+  }
+
+  return `${name} schema`;
+}
+
+function inferToolCapability(name: string): string {
+  return name === "create_issue" ? "external issue creation" : humanizeId(name).toLowerCase();
+}
+
+function humanizeId(value: string): string {
+  const words = slugId(value).split("_").filter(Boolean);
+
+  return words.map((word) => `${word.slice(0, 1).toUpperCase()}${word.slice(1)}`).join(" ");
+}
+
+function slugId(value: string): string {
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[^a-zA-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .toLowerCase();
+}
+
+function edgeIdPart(value: string): string {
+  return value.replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_+|_+$/g, "").toLowerCase();
 }
 
 function relativePath(cwd: string, sourceFile: SourceFile): string {
@@ -523,4 +726,20 @@ function addEdge(
     kind,
     hash: hashEvidence({ id, from, to, kind })
   });
+}
+
+function addEdgeIfMissing(
+  graph: MutableGraph,
+  id: string,
+  from: string,
+  to: string,
+  kind: GraphEdge["kind"]
+): void {
+  const exists = [...graph.edges.values()].some(
+    (edge) => edge.from === from && edge.to === to && edge.kind === kind
+  );
+
+  if (!exists) {
+    addEdge(graph, id, from, to, kind);
+  }
 }
