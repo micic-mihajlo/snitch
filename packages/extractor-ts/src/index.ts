@@ -5,6 +5,7 @@ import {
   QuoteKind,
   SyntaxKind,
   type CallExpression,
+  type Decorator,
   type IfStatement,
   type ImportDeclaration,
   type Node as TsMorphNode,
@@ -42,6 +43,7 @@ type MutableGraph = {
   externalAccesses: GraphAccess[];
   envAccesses: GraphAccess[];
   databaseAccesses: DatabaseAccess[];
+  companionAccesses: CompanionAccess[];
 };
 
 type GraphAccess = {
@@ -54,8 +56,13 @@ type DatabaseAccess = GraphAccess & {
   edgeKind: "reads" | "writes";
 };
 
+type CompanionAccess = GraphAccess & {
+  role: CompanionRole;
+  symbol: string;
+};
+
 type DatabaseCall = {
-  source: "prisma" | "drizzle" | "supabase";
+  source: "prisma" | "drizzle" | "supabase" | "knex" | "typeorm" | "mongoose";
   entity: string;
   operation: string;
   edgeKind: "reads" | "writes";
@@ -99,7 +106,8 @@ export function extractTypeScriptGraph(options: ExtractTypeScriptGraphOptions): 
     warnings: [],
     externalAccesses: [],
     envAccesses: [],
-    databaseAccesses: []
+    databaseAccesses: [],
+    companionAccesses: []
   };
 
   const sourceFileCount = project.getSourceFiles().length;
@@ -112,12 +120,16 @@ export function extractTypeScriptGraph(options: ExtractTypeScriptGraphOptions): 
     extractProviderSurface(options.cwd, sourceFile, graph);
     extractDatabaseSurface(options.cwd, sourceFile, graph);
     extractCompanionSurface(options.cwd, sourceFile, graph);
+    extractCompanionAccessSurface(options.cwd, sourceFile, graph);
     extractTestSurface(options.cwd, sourceFile, graph);
     extractAgentToolingSurface(options.cwd, sourceFile, graph);
   }
 
-  connectKnownIssueTool(graph);
+  connectAssistantSurfaces(graph);
+  connectToolRegistrySurfaces(graph);
   connectFileLocalSurfaces(graph);
+  connectCompanionSurfaces(graph);
+  connectTestCoverageSurfaces(graph);
   connectAgentToolingSurfaces(graph);
   attachMissingCompanionWarnings(graph);
 
@@ -151,6 +163,8 @@ function extractRouteSurface(cwd: string, sourceFile: SourceFile, graph: Mutable
   const routePath = routePathFromFile(file);
 
   if (!routePath) {
+    extractRegisteredRouteSurface(file, sourceFile, graph);
+    extractDecoratedControllerSurface(file, sourceFile, graph);
     return;
   }
 
@@ -161,20 +175,119 @@ function extractRouteSurface(cwd: string, sourceFile: SourceFile, graph: Mutable
       continue;
     }
 
-    addNode(graph, {
-      id: `endpoint:${method}:${routePath}`,
-      kind: "endpoint",
-      label: `${method} ${routePath}`,
+    addEndpointNode(graph, {
+      method,
+      routePath,
       file,
       line: handler.getStartLineNumber(),
-      meta: {
-        endLine: handler.getEndLineNumber(),
-        method,
-        route: routePath,
-        runtime: "next-route-handler"
-      }
+      endLine: handler.getEndLineNumber(),
+      runtime: "next-route-handler"
     });
   }
+}
+
+function extractRegisteredRouteSurface(file: string, sourceFile: SourceFile, graph: MutableGraph): void {
+  for (const call of sourceFile.getDescendantsOfKind(SyntaxKind.CallExpression)) {
+    const expression = call.getExpression();
+
+    if (!Node.isPropertyAccessExpression(expression)) {
+      continue;
+    }
+
+    const receiver = rootIdentifierName(expression);
+    const member = expression.getName();
+
+    if (!routeReceiverNames.has(receiver)) {
+      continue;
+    }
+
+    if (member === "route") {
+      const route = routeFromObjectRegistration(call);
+
+      if (route) {
+        addEndpointNode(graph, {
+          method: route.method,
+          routePath: route.routePath,
+          file,
+          line: call.getStartLineNumber(),
+          endLine: call.getEndLineNumber(),
+          runtime: "route-object-registration"
+        });
+      }
+
+      continue;
+    }
+
+    const method = member.toUpperCase();
+    const routePath = normalizeRoutePath(getStringLiteralValue(call.getArguments()[0]));
+
+    if (!httpMethods.has(method) || !routePath) {
+      continue;
+    }
+
+    addEndpointNode(graph, {
+      method,
+      routePath,
+      file,
+      line: call.getStartLineNumber(),
+      endLine: call.getEndLineNumber(),
+      runtime: "route-registration"
+    });
+  }
+}
+
+function extractDecoratedControllerSurface(file: string, sourceFile: SourceFile, graph: MutableGraph): void {
+  for (const classDeclaration of sourceFile.getClasses()) {
+    const controllerDecorator = classDeclaration.getDecorators().find((decorator) => decorator.getName() === "Controller");
+    const controllerPrefix = normalizeRoutePath(firstDecoratorStringArgument(controllerDecorator)) ?? "";
+
+    for (const methodDeclaration of classDeclaration.getMethods()) {
+      for (const decorator of methodDeclaration.getDecorators()) {
+        const method = decoratorHttpMethods.get(decorator.getName());
+
+        if (!method) {
+          continue;
+        }
+
+        const routePath = joinRoutePaths(controllerPrefix, firstDecoratorStringArgument(decorator));
+
+        addEndpointNode(graph, {
+          method,
+          routePath,
+          file,
+          line: methodDeclaration.getStartLineNumber(),
+          endLine: methodDeclaration.getEndLineNumber(),
+          runtime: "decorated-controller"
+        });
+      }
+    }
+  }
+}
+
+function addEndpointNode(
+  graph: MutableGraph,
+  input: {
+    method: string;
+    routePath: string;
+    file: string;
+    line: number;
+    endLine: number;
+    runtime: string;
+  }
+): void {
+  addNode(graph, {
+    id: `endpoint:${input.method}:${input.routePath}`,
+    kind: "endpoint",
+    label: `${input.method} ${input.routePath}`,
+    file: input.file,
+    line: input.line,
+    meta: {
+      endLine: input.endLine,
+      method: input.method,
+      route: input.routePath,
+      runtime: input.runtime
+    }
+  });
 }
 
 function extractAssistantSurface(cwd: string, sourceFile: SourceFile, graph: MutableGraph): void {
@@ -475,6 +588,11 @@ type ExternalCall = {
   url?: string;
 };
 
+type RegisteredRoute = {
+  method: string;
+  routePath: string;
+};
+
 // Read a file's imports to learn which local identifiers are HTTP clients (axios/got/ky/…)
 // or provider SDKs (stripe/openai/octokit/…). This keeps detection precise: we only treat a
 // `.get()`/`.post()` as an external call when the receiver was actually imported as a client.
@@ -677,30 +795,96 @@ function extractCompanionSurface(cwd: string, sourceFile: SourceFile, graph: Mut
 
     const line = variable.getStartLineNumber();
 
-    if (role === "permission") {
-      addNode(graph, {
-        id: `contract:${slugId(name)}`,
-        kind: "contract",
-        label: humanizeId(name),
-        file,
-        line,
-        meta: { symbol: name, role: "permission" }
-      });
+    addCompanionNode(graph, {
+      name,
+      role,
+      file,
+      line,
+      capability: permissionCapabilityForVariable(variable)
+    });
+  }
+
+  for (const fn of sourceFile.getFunctions()) {
+    const name = fn.getName();
+
+    if (!name) {
       continue;
     }
 
-    addNode(graph, {
-      id: `service:${slugId(name)}`,
-      kind: "service",
-      label: humanizeId(name),
+    const role = companionRoleForName(name);
+
+    if (!role) {
+      continue;
+    }
+
+    addCompanionNode(graph, {
+      name,
+      role,
       file,
-      line,
-      meta: { symbol: name, role }
+      line: fn.getStartLineNumber()
     });
   }
 }
 
 type CompanionRole = "audit" | "redaction" | "permission";
+
+function addCompanionNode(
+  graph: MutableGraph,
+  input: {
+    name: string;
+    role: CompanionRole;
+    file: string;
+    line: number;
+    capability?: string | undefined;
+  }
+): void {
+  if (input.role === "permission") {
+    addNode(graph, {
+      id: `contract:${slugId(input.name)}`,
+      kind: "contract",
+      label: humanizeId(input.name),
+      file: input.file,
+      line: input.line,
+      meta: { symbol: input.name, role: "permission", capability: input.capability }
+    });
+    return;
+  }
+
+  addNode(graph, {
+    id: `service:${slugId(input.name)}`,
+    kind: "service",
+    label: humanizeId(input.name),
+    file: input.file,
+    line: input.line,
+    meta: { symbol: input.name, role: input.role }
+  });
+}
+
+function permissionCapabilityForVariable(variable: VariableDeclaration): string | undefined {
+  const objectLiteral = variable.getInitializerIfKind(SyntaxKind.ObjectLiteralExpression);
+  return objectLiteral ? getStringProperty(objectLiteral, "capability") : undefined;
+}
+
+function extractCompanionAccessSurface(cwd: string, sourceFile: SourceFile, graph: MutableGraph): void {
+  const file = relativePath(cwd, sourceFile);
+
+  for (const call of sourceFile.getDescendantsOfKind(SyntaxKind.CallExpression)) {
+    const rootName = rootIdentifierName(call.getExpression());
+    const role = companionRoleForName(rootName);
+
+    if (!role) {
+      continue;
+    }
+
+    graph.companionAccesses.push({
+      nodeId: `companion:${slugId(rootName)}`,
+      file,
+      line: call.getStartLineNumber(),
+      role,
+      symbol: rootName
+    });
+  }
+}
 
 function companionRoleForName(name: string): CompanionRole | undefined {
   if (/audit/i.test(name)) {
@@ -726,19 +910,26 @@ function extractTestSurface(cwd: string, sourceFile: SourceFile, graph: MutableG
   }
 
   const content = sourceFile.getFullText();
+  const matcher = slugId(content);
 
-  if (content.includes("unauthorized") && content.includes("createIssue")) {
-    addNode(graph, {
-      id: "test:issue_tool_rejects_unauthorized",
-      kind: "test",
-      label: "Rejects unauthorized issue calls",
-      file,
-      line: 1,
-      meta: {
-        matcher: "unauthorized createIssue"
-      }
-    });
+  if (!/(unauthorized|permission|forbidden|rejects?)/i.test(content)) {
+    return;
   }
+
+  const isCreateIssueCoverage = matcher.includes("create_issue");
+
+  addNode(graph, {
+    id: isCreateIssueCoverage
+      ? "test:issue_tool_rejects_unauthorized"
+      : `test:${sourceScopeForFile(file)}_unauthorized`,
+    kind: "test",
+    label: isCreateIssueCoverage ? "Rejects unauthorized issue calls" : "Unauthorized-call coverage",
+    file,
+    line: 1,
+    meta: {
+      matcher
+    }
+  });
 }
 
 function extractAgentToolingSurface(cwd: string, sourceFile: SourceFile, graph: MutableGraph): void {
@@ -860,85 +1051,82 @@ function cliCommandNameFromIfStatement(ifStatement: IfStatement): string | undef
   return undefined;
 }
 
-function connectKnownIssueTool(graph: MutableGraph): void {
+function connectAssistantSurfaces(graph: MutableGraph): void {
   if (graph.nodes.has("agent:router") && graph.nodes.has("service:tool_registry")) {
-    addEdge(graph, "edge:router-uses-registry", "agent:router", "service:tool_registry", "calls");
+    addEdgeIfMissing(graph, "edge:router-uses-registry", "agent:router", "service:tool_registry", "calls");
   }
+}
 
-  if (graph.nodes.has("service:tool_registry") && graph.nodes.has("tool:create_issue")) {
-    addEdge(
-      graph,
-      "edge:registry-registers-create-issue",
-      "service:tool_registry",
-      "tool:create_issue",
-      "registers"
-    );
+function connectToolRegistrySurfaces(graph: MutableGraph): void {
+  const registries = [...graph.nodes.values()].filter(
+    (node) =>
+      node.kind === "service" &&
+      (node.id.includes("tool_registry") || /tool.*registry/i.test(String(node.meta?.symbol ?? "")))
+  );
+  const tools = [...graph.nodes.values()].filter(
+    (node) => node.kind === "tool" && typeof node.meta?.surface !== "string"
+  );
+
+  for (const registry of registries) {
+    for (const tool of tools) {
+      addEdgeIfMissing(
+        graph,
+        registryRegistersToolEdgeId(registry, tool),
+        registry.id,
+        tool.id,
+        "registers"
+      );
+    }
   }
+}
 
-  if (graph.nodes.has("tool:create_issue") && graph.nodes.has("schema:create_issue_input")) {
-    addEdge(
-      graph,
-      "edge:create-issue-validates-input",
-      "tool:create_issue",
-      "schema:create_issue_input",
-      "validates"
-    );
+function connectCompanionSurfaces(graph: MutableGraph): void {
+  const actors = [...graph.nodes.values()].filter((node) => node.kind === "tool" || node.kind === "endpoint");
+  const auditServices = [...graph.nodes.values()].filter(
+    (node) => node.kind === "service" && node.meta?.role === "audit"
+  );
+  const redactionServices = [...graph.nodes.values()].filter(
+    (node) => node.kind === "service" && node.meta?.role === "redaction"
+  );
+  const permissionContracts = [...graph.nodes.values()].filter(
+    (node) => node.kind === "contract" || node.meta?.role === "permission"
+  );
+
+  for (const actor of actors) {
+    if (!actorReachesExternalSystem(graph, actor)) {
+      continue;
+    }
+
+    for (const service of auditServices.filter((service) => actorHasCompanionAccess(graph, actor, service))) {
+      addEdgeIfMissing(graph, companionEdgeId(actor, service, "writes"), actor.id, service.id, "writes");
+    }
+
+    for (const service of redactionServices.filter((service) => actorHasCompanionAccess(graph, actor, service))) {
+      addEdgeIfMissing(graph, companionEdgeId(actor, service, "calls"), actor.id, service.id, "calls");
+    }
+
+    for (const contract of permissionContracts.filter((contract) => actorHasPermissionContract(graph, actor, contract))) {
+      addEdgeIfMissing(graph, companionEdgeId(actor, contract, "satisfies"), actor.id, contract.id, "satisfies");
+    }
   }
+}
 
-  const externalNode = [...graph.nodes.keys()].find((id) => id.startsWith("external:"));
+function connectTestCoverageSurfaces(graph: MutableGraph): void {
+  const actors = [...graph.nodes.values()].filter((node) => node.kind === "tool" || node.kind === "endpoint");
+  const tests = [...graph.nodes.values()].filter((node) => node.kind === "test");
 
-  if (graph.nodes.has("tool:create_issue") && externalNode) {
-    addEdge(graph, "edge:create-issue-calls-provider", "tool:create_issue", externalNode, "calls");
-  }
+  for (const actor of actors) {
+    const aliases = actorMatcherAliases(actor);
 
-  if (graph.nodes.has("tool:create_issue") && graph.nodes.has("env:ISSUE_PROVIDER_API_KEY")) {
-    addEdge(
-      graph,
-      "edge:create-issue-uses-provider-key",
-      "tool:create_issue",
-      "env:ISSUE_PROVIDER_API_KEY",
-      "uses_secret"
-    );
-  }
+    for (const test of tests) {
+      const matcher = String(test.meta?.matcher ?? "");
 
-  if (graph.nodes.has("test:issue_tool_rejects_unauthorized") && graph.nodes.has("tool:create_issue")) {
-    addEdge(
-      graph,
-      "edge:test-covers-create-issue",
-      "test:issue_tool_rejects_unauthorized",
-      "tool:create_issue",
-      "covers"
-    );
-  }
+      if (!aliases.some((alias) => matcher.includes(alias))) {
+        continue;
+      }
 
-  if (graph.nodes.has("tool:create_issue") && graph.nodes.has("service:tool_audit_log")) {
-    addEdge(
-      graph,
-      "edge:create-issue-writes-audit",
-      "tool:create_issue",
-      "service:tool_audit_log",
-      "writes"
-    );
-  }
-
-  if (graph.nodes.has("tool:create_issue") && graph.nodes.has("service:secret_redactor")) {
-    addEdge(
-      graph,
-      "edge:create-issue-calls-redactor",
-      "tool:create_issue",
-      "service:secret_redactor",
-      "calls"
-    );
-  }
-
-  if (graph.nodes.has("tool:create_issue") && graph.nodes.has("contract:issue_tool_permission_scope")) {
-    addEdge(
-      graph,
-      "edge:create-issue-satisfies-permission",
-      "tool:create_issue",
-      "contract:issue_tool_permission_scope",
-      "satisfies"
-    );
+      addEdgeIfMissing(graph, testCoverageEdgeId(test, actor), test.id, actor.id, "covers");
+    }
   }
 }
 
@@ -1009,7 +1197,7 @@ function connectFileLocalSurfaces(graph: MutableGraph): void {
       if (schema) {
         addEdgeIfMissing(
           graph,
-          `edge:${edgeIdPart(actor.id)}-validates-${edgeIdPart(schema.id)}`,
+          actorSchemaEdgeId(actor, schema),
           actor.id,
           schema.id,
           "validates"
@@ -1020,7 +1208,7 @@ function connectFileLocalSurfaces(graph: MutableGraph): void {
     for (const external of graph.externalAccesses.filter((access) => isAccessInActorRange(actor, access))) {
       addEdgeIfMissing(
         graph,
-        `edge:${edgeIdPart(actor.id)}-calls-${edgeIdPart(external.nodeId)}`,
+        actorExternalEdgeId(actor, external.nodeId),
         actor.id,
         external.nodeId,
         "calls"
@@ -1030,7 +1218,7 @@ function connectFileLocalSurfaces(graph: MutableGraph): void {
     for (const envVar of graph.envAccesses.filter((access) => isAccessInActorRange(actor, access))) {
       addEdgeIfMissing(
         graph,
-        `edge:${edgeIdPart(actor.id)}-uses-${edgeIdPart(envVar.nodeId)}`,
+        actorEnvEdgeId(actor, envVar.nodeId),
         actor.id,
         envVar.nodeId,
         "uses_secret"
@@ -1047,6 +1235,110 @@ function connectFileLocalSurfaces(graph: MutableGraph): void {
       );
     }
   }
+}
+
+function registryRegistersToolEdgeId(registry: GraphNode, tool: GraphNode): string {
+  if (registry.id === "service:tool_registry" && tool.id === "tool:create_issue") {
+    return "edge:registry-registers-create-issue";
+  }
+
+  return `edge:${edgeIdPart(registry.id)}-registers-${edgeIdPart(tool.id)}`;
+}
+
+function actorSchemaEdgeId(actor: GraphNode, schema: GraphNode): string {
+  if (actor.id === "tool:create_issue" && schema.id === "schema:create_issue_input") {
+    return "edge:create-issue-validates-input";
+  }
+
+  return `edge:${edgeIdPart(actor.id)}-validates-${edgeIdPart(schema.id)}`;
+}
+
+function actorExternalEdgeId(actor: GraphNode, externalNodeId: string): string {
+  if (actor.id === "tool:create_issue") {
+    return "edge:create-issue-calls-provider";
+  }
+
+  return `edge:${edgeIdPart(actor.id)}-calls-${edgeIdPart(externalNodeId)}`;
+}
+
+function actorEnvEdgeId(actor: GraphNode, envNodeId: string): string {
+  if (actor.id === "tool:create_issue" && envNodeId === "env:ISSUE_PROVIDER_API_KEY") {
+    return "edge:create-issue-uses-provider-key";
+  }
+
+  return `edge:${edgeIdPart(actor.id)}-uses-${edgeIdPart(envNodeId)}`;
+}
+
+function companionEdgeId(actor: GraphNode, companion: GraphNode, kind: GraphEdge["kind"]): string {
+  if (actor.id === "tool:create_issue" && companion.id === "service:tool_audit_log" && kind === "writes") {
+    return "edge:create-issue-writes-audit";
+  }
+
+  if (actor.id === "tool:create_issue" && companion.id === "service:secret_redactor" && kind === "calls") {
+    return "edge:create-issue-calls-redactor";
+  }
+
+  if (
+    actor.id === "tool:create_issue" &&
+    companion.id === "contract:issue_tool_permission_scope" &&
+    kind === "satisfies"
+  ) {
+    return "edge:create-issue-satisfies-permission";
+  }
+
+  return `edge:${edgeIdPart(actor.id)}-${kind}-${edgeIdPart(companion.id)}`;
+}
+
+function testCoverageEdgeId(test: GraphNode, actor: GraphNode): string {
+  if (test.id === "test:issue_tool_rejects_unauthorized" && actor.id === "tool:create_issue") {
+    return "edge:test-covers-create-issue";
+  }
+
+  return `edge:${edgeIdPart(test.id)}-covers-${edgeIdPart(actor.id)}`;
+}
+
+function actorReachesExternalSystem(graph: MutableGraph, actor: GraphNode): boolean {
+  return [...graph.edges.values()].some(
+    (edge) => edge.from === actor.id && edge.kind === "calls" && edge.to.startsWith("external:")
+  );
+}
+
+function actorHasCompanionAccess(graph: MutableGraph, actor: GraphNode, companion: GraphNode): boolean {
+  const symbol = typeof companion.meta?.symbol === "string" ? slugId(companion.meta.symbol) : "";
+  const role = companion.meta?.role;
+
+  if (!symbol || role !== "audit" && role !== "redaction" && role !== "permission") {
+    return false;
+  }
+
+  return graph.companionAccesses.some(
+    (access) =>
+      access.role === role &&
+      slugId(access.symbol) === symbol &&
+      isAccessInActorRange(actor, access)
+  );
+}
+
+function actorHasPermissionContract(graph: MutableGraph, actor: GraphNode, contract: GraphNode): boolean {
+  return actorHasCompanionAccess(graph, actor, contract) || companionMatchesActor(contract, actor);
+}
+
+function companionMatchesActor(companion: GraphNode, actor: GraphNode): boolean {
+  const aliases = actorMatcherAliases(actor);
+  const symbol = typeof companion.meta?.symbol === "string" ? slugId(companion.meta.symbol) : "";
+  const capability = typeof companion.meta?.capability === "string" ? slugId(companion.meta.capability) : "";
+  const candidates = [slugId(companion.id), slugId(companion.label), symbol, capability].filter(Boolean);
+
+  return aliases.some((alias) => candidates.some((candidate) => candidate.includes(alias)));
+}
+
+function actorMatcherAliases(actor: GraphNode): string[] {
+  return [
+    actorSlug(actor),
+    slugId(actor.label),
+    typeof actor.meta?.symbol === "string" ? slugId(actor.meta.symbol) : "",
+    typeof actor.meta?.capability === "string" ? slugId(actor.meta.capability) : ""
+  ].filter(Boolean);
 }
 
 function isAccessInActorRange(actor: GraphNode, access: GraphAccess): boolean {
@@ -1107,34 +1399,86 @@ function missingCompanionWarningsForActor(
 ): SnitchWarning[] {
   const slug = actorSlug(actor);
   const canonicalWarnings = actor.id === "tool:create_issue"
-    ? createIssueWarnings(externalNodeId)
+    ? createIssueWarnings(graph, actor, externalNodeId)
     : createGenericToolWarnings(actor, externalNodeId);
   const warningSatisfied = new Map<string, boolean>([
-    [`warning:tool_audit_log_missing:${slug}`, hasCompanionRole(graph, "audit")],
-    [`warning:secret_redaction_missing:${slug}`, hasCompanionRole(graph, "redaction")],
-    [`warning:permission_scope_missing:${slug}`, hasPermissionScopeForTool(graph, slug)],
-    [`warning:unauthorized_test_missing:${slug}`, hasUnauthorizedTestForTool(graph, slug)]
+    [`warning:tool_audit_log_missing:${slug}`, hasCompanionForActor(graph, actor, "audit")],
+    [`warning:secret_redaction_missing:${slug}`, hasCompanionForActor(graph, actor, "redaction")],
+    [`warning:permission_scope_missing:${slug}`, hasPermissionScopeForActor(graph, actor)],
+    [`warning:unauthorized_test_missing:${slug}`, hasUnauthorizedTestForActor(graph, actor)]
   ]);
 
   return canonicalWarnings.filter((warning) => !warningSatisfied.get(warning.id));
 }
 
-function hasCompanionRole(graph: MutableGraph, role: CompanionRole): boolean {
-  return [...graph.nodes.values()].some((node) => node.meta?.role === role);
+function hasCompanionForActor(graph: MutableGraph, actor: GraphNode, role: CompanionRole): boolean {
+  return [...graph.edges.values()].some((edge) => {
+    if (edge.from !== actor.id) {
+      return false;
+    }
+
+    const node = graph.nodes.get(edge.to);
+    return node?.meta?.role === role;
+  });
 }
 
-function createIssueWarnings(externalNodeId: string): SnitchWarning[] {
+function createIssueWarnings(graph: MutableGraph, actor: GraphNode, externalNodeId: string): SnitchWarning[] {
+  const envNodeId = [...graph.edges.values()].find(
+    (edge) => edge.from === actor.id && edge.kind === "uses_secret" && edge.to.startsWith("env:")
+  )?.to;
+
   return createMissingCompanionWarnings().map((item) =>
-    item.id === "warning:tool_audit_log_missing:create_issue"
-      ? {
-          ...item,
-          evidence: [
-            `tool:create_issue -> ${externalNodeId}`,
-            "No service:tool_audit_log node satisfies this capability."
-          ]
-        }
-      : item
+    issueWarningWithCurrentEvidence(item, actor, externalNodeId, envNodeId)
   );
+}
+
+function issueWarningWithCurrentEvidence(
+  warning: SnitchWarning,
+  actor: GraphNode,
+  externalNodeId: string,
+  envNodeId: string | undefined
+): SnitchWarning {
+  if (warning.id === "warning:tool_audit_log_missing:create_issue") {
+    return {
+      ...warning,
+      evidence: [
+        `${actor.id} -> ${externalNodeId}`,
+        "No service:tool_audit_log node satisfies this capability."
+      ]
+    };
+  }
+
+  if (warning.id === "warning:secret_redaction_missing:create_issue") {
+    return {
+      ...warning,
+      evidence: [
+        envNodeId ? `${actor.id} -> ${envNodeId}` : `${actor.id} -> ${externalNodeId}`,
+        `No service:secret_redactor node is called by ${actor.id}.`
+      ]
+    };
+  }
+
+  if (warning.id === "warning:permission_scope_missing:create_issue") {
+    return {
+      ...warning,
+      evidence: [
+        `External capability is exposed by ${actor.id}.`,
+        `No permission contract satisfies ${actor.id}.`
+      ]
+    };
+  }
+
+  if (warning.id === "warning:unauthorized_test_missing:create_issue") {
+    return {
+      ...warning,
+      evidence: [
+        `${actor.id} has no covers edge from a test node`,
+        `Expected unauthorized-call coverage for ${actor.id}.`
+      ]
+    };
+  }
+
+  return warning;
 }
 
 function createGenericToolWarnings(tool: GraphNode, externalNodeId: string): SnitchWarning[] {
@@ -1193,29 +1537,40 @@ function createGenericToolWarnings(tool: GraphNode, externalNodeId: string): Sni
   ];
 }
 
-function hasPermissionScopeForTool(graph: MutableGraph, toolSlug: string): boolean {
-  if (toolSlug === "create_issue" && graph.nodes.has("contract:issue_tool_permission_scope")) {
+function hasPermissionScopeForActor(graph: MutableGraph, actor: GraphNode): boolean {
+  const aliases = actorMatcherAliases(actor);
+
+  if ([...graph.edges.values()].some((edge) => edge.from === actor.id && edge.kind === "satisfies")) {
     return true;
   }
 
   return [...graph.nodes.values()].some(
     (node) =>
       (node.kind === "contract" || node.meta?.role === "permission") &&
-      (node.meta?.role === "permission" ||
-        node.id.includes(toolSlug) ||
-        String(node.meta?.symbol ?? "").toLowerCase().includes(toolSlug))
+      aliases.some((alias) => {
+        const symbol = typeof node.meta?.symbol === "string" ? slugId(node.meta.symbol) : "";
+        const capability = typeof node.meta?.capability === "string" ? slugId(node.meta.capability) : "";
+        return (
+          slugId(node.id).includes(alias) ||
+          slugId(node.label).includes(alias) ||
+          symbol.includes(alias) ||
+          capability.includes(alias)
+        );
+      })
   );
 }
 
-function hasUnauthorizedTestForTool(graph: MutableGraph, toolSlug: string): boolean {
-  if (toolSlug === "create_issue" && graph.nodes.has("test:issue_tool_rejects_unauthorized")) {
+function hasUnauthorizedTestForActor(graph: MutableGraph, actor: GraphNode): boolean {
+  if ([...graph.edges.values()].some((edge) => edge.to === actor.id && edge.kind === "covers")) {
     return true;
   }
+
+  const aliases = actorMatcherAliases(actor);
 
   return [...graph.nodes.values()].some(
     (node) =>
       node.kind === "test" &&
-      (node.id.includes(toolSlug) || String(node.meta?.matcher ?? "").toLowerCase().includes(toolSlug))
+      aliases.some((alias) => slugId(node.id).includes(alias) || String(node.meta?.matcher ?? "").includes(alias))
   );
 }
 
@@ -1283,7 +1638,14 @@ function safeHost(url: string): string | undefined {
 }
 
 function getDatabaseCall(call: CallExpression): DatabaseCall | undefined {
-  return getPrismaCall(call) ?? getDrizzleCall(call) ?? getSupabaseCall(call);
+  return (
+    getPrismaCall(call) ??
+    getDrizzleCall(call) ??
+    getSupabaseCall(call) ??
+    getKnexCall(call) ??
+    getTypeOrmCall(call) ??
+    getMongooseCall(call)
+  );
 }
 
 function getPrismaCall(call: CallExpression): DatabaseCall | undefined {
@@ -1362,6 +1724,124 @@ function getSupabaseCall(call: CallExpression): DatabaseCall | undefined {
   };
 }
 
+function getKnexCall(call: CallExpression): DatabaseCall | undefined {
+  const callText = call.getText();
+  const match = callText.match(
+    /\b(?:knex|db|trx)\(\s*["'`]([^"'`]+)["'`]\s*\).*?\.(select|first|pluck|count|insert|update|del|delete)\s*\(/
+  );
+
+  if (!match?.[1] || !match[2]) {
+    return undefined;
+  }
+
+  return {
+    source: "knex",
+    entity: match[1],
+    operation: match[2],
+    edgeKind: knexWriteMethods.has(match[2]) ? "writes" : "reads"
+  };
+}
+
+function getTypeOrmCall(call: CallExpression): DatabaseCall | undefined {
+  const expressionText = call.getExpression().getText();
+  const repositoryMatch = expressionText.match(
+    /(?:^|\.)([A-Za-z0-9_]+Repository)\.(find|findOne|findOneBy|count|save|insert|update|delete|remove)$/
+  );
+
+  if (repositoryMatch?.[1] && repositoryMatch[2]) {
+    const entity = repositoryMatch[1].replace(/Repository$/, "");
+
+    return {
+      source: "typeorm",
+      entity,
+      operation: repositoryMatch[2],
+      edgeKind: typeOrmWriteMethods.has(repositoryMatch[2]) ? "writes" : "reads"
+    };
+  }
+
+  const getRepositoryMatch = expressionText.match(
+    /\.getRepository\(\s*([A-Za-z0-9_]+)\s*\)\.(find|findOne|findOneBy|count|save|insert|update|delete|remove)$/
+  );
+
+  if (!getRepositoryMatch?.[1] || !getRepositoryMatch[2]) {
+    return undefined;
+  }
+
+  return {
+    source: "typeorm",
+    entity: getRepositoryMatch[1],
+    operation: getRepositoryMatch[2],
+    edgeKind: typeOrmWriteMethods.has(getRepositoryMatch[2]) ? "writes" : "reads"
+  };
+}
+
+function getMongooseCall(call: CallExpression): DatabaseCall | undefined {
+  const expressionText = call.getExpression().getText();
+  const match = expressionText.match(
+    /(?:^|\.)([A-Z][A-Za-z0-9_]*(?:Model)?)\.(find|findOne|findById|countDocuments|create|insertMany|updateOne|updateMany|deleteOne|deleteMany|findByIdAndUpdate|findByIdAndDelete)$/
+  );
+
+  if (!match?.[1] || !match[2]) {
+    return undefined;
+  }
+
+  return {
+    source: "mongoose",
+    entity: match[1].replace(/Model$/, ""),
+    operation: match[2],
+    edgeKind: mongooseWriteMethods.has(match[2]) ? "writes" : "reads"
+  };
+}
+
+function routeFromObjectRegistration(call: CallExpression): RegisteredRoute | undefined {
+  const objectLiteral = call.getArguments().find(Node.isObjectLiteralExpression);
+
+  if (!objectLiteral) {
+    return undefined;
+  }
+
+  const method = getStringProperty(objectLiteral, "method")?.toUpperCase();
+  const routePath = normalizeRoutePath(getStringProperty(objectLiteral, "url") ?? getStringProperty(objectLiteral, "path"));
+
+  if (!method || !httpMethods.has(method) || !routePath) {
+    return undefined;
+  }
+
+  return { method, routePath };
+}
+
+function firstDecoratorStringArgument(decorator: Decorator | undefined): string | undefined {
+  return getStringLiteralValue(decorator?.getCallExpression()?.getArguments()[0]);
+}
+
+function normalizeRoutePath(path: string | undefined): string | undefined {
+  if (path === undefined) {
+    return undefined;
+  }
+
+  const trimmed = path.trim();
+
+  if (!trimmed) {
+    return "/";
+  }
+
+  return `/${trimmed.replace(/^\/+|\/+$/g, "")}`.replace(/\/+/g, "/");
+}
+
+function joinRoutePaths(prefix: string, path: string | undefined): string {
+  const routePath = normalizeRoutePath(path) ?? "/";
+
+  if (!prefix || prefix === "/") {
+    return routePath;
+  }
+
+  if (routePath === "/") {
+    return prefix;
+  }
+
+  return normalizeRoutePath(`${prefix}/${routePath}`) ?? routePath;
+}
+
 function getDatabaseEntityFromArgument(node: TsMorphNode | undefined): string | undefined {
   const literal = getStringLiteralValue(node);
 
@@ -1381,7 +1861,27 @@ function getDatabaseEntityFromArgument(node: TsMorphNode | undefined): string | 
 const readDatabaseMethods = new Set(["aggregate", "count", "findFirst", "findMany", "findUnique", "groupBy"]);
 const writeDatabaseMethods = new Set(["create", "createMany", "delete", "deleteMany", "insert", "update", "updateMany", "upsert"]);
 const databaseMethods = new Set([...readDatabaseMethods, ...writeDatabaseMethods]);
+const knexWriteMethods = new Set(["insert", "update", "del", "delete"]);
+const typeOrmWriteMethods = new Set(["save", "insert", "update", "delete", "remove"]);
+const mongooseWriteMethods = new Set([
+  "create",
+  "insertMany",
+  "updateOne",
+  "updateMany",
+  "deleteOne",
+  "deleteMany",
+  "findByIdAndUpdate",
+  "findByIdAndDelete"
+]);
 const httpMethods = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
+const routeReceiverNames = new Set(["app", "router", "routes", "server", "fastify", "hono"]);
+const decoratorHttpMethods = new Map([
+  ["Get", "GET"],
+  ["Post", "POST"],
+  ["Put", "PUT"],
+  ["Patch", "PATCH"],
+  ["Delete", "DELETE"]
+]);
 const toolFactoryNames = new Set(["tool", "createTool", "defineTool"]);
 const toolRegistrationMethods = new Set(["tool", "registerTool"]);
 

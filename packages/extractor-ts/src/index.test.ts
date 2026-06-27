@@ -233,6 +233,84 @@ describe("extractTypeScriptGraph", () => {
     );
   });
 
+  it("extracts common server route registrations beyond file-based route handlers", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "snitch-server-route-extractor-"));
+    tempDirs.push(tempRoot);
+    await mkdir(join(tempRoot, "src"), { recursive: true });
+    await writeFile(
+      join(tempRoot, "src/server.ts"),
+      [
+        "const app = createServer();",
+        "const router = createRouter();",
+        "const fastify = createFastify();",
+        "const hono = createHono();",
+        "",
+        "app.post(\"/api/messages\", async (_req, res) => {",
+        "  await fetch(\"https://api.openai.com/v1/responses\", {",
+        "    headers: { authorization: `Bearer ${process.env.OPENAI_API_KEY}` }",
+        "  });",
+        "  return res.json({ ok: true });",
+        "});",
+        "",
+        "router.delete(\"/api/messages/:id\", async () => {",
+        "  await fetch(\"https://api.github.com/repos/acme/app/issues\");",
+        "});",
+        "",
+        "fastify.route({",
+        "  method: \"PATCH\",",
+        "  url: \"/api/jobs/:id\",",
+        "  handler: async () => {",
+        "    await fetch(\"https://api.linear.app/graphql\");",
+        "  }",
+        "});",
+        "",
+        "hono.get(\"/api/ping\", (c) => c.json({ ok: true }));",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+    await writeFile(
+      join(tempRoot, "src/admin.controller.ts"),
+      [
+        "function Controller(_path?: string) { return () => undefined; }",
+        "function Get(_path?: string) { return () => undefined; }",
+        "",
+        "@Controller(\"admin\")",
+        "class AdminController {",
+        "  @Get(\"health\")",
+        "  health() {",
+        "    return fetch(\"https://status.example.com/check\");",
+        "  }",
+        "}",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const result = extractTypeScriptGraph({ cwd: tempRoot });
+    const nodeIds = result.snapshot.graph.nodes.map((node) => node.id);
+    const edgeIds = result.snapshot.graph.edges.map((edge) => edge.id);
+
+    expect(nodeIds).toEqual(
+      expect.arrayContaining([
+        "endpoint:POST:/api/messages",
+        "endpoint:DELETE:/api/messages/:id",
+        "endpoint:PATCH:/api/jobs/:id",
+        "endpoint:GET:/api/ping",
+        "endpoint:GET:/admin/health"
+      ])
+    );
+    expect(edgeIds).toEqual(
+      expect.arrayContaining([
+        "edge:endpoint_post_api_messages-calls-external_api_openai_com",
+        "edge:endpoint_post_api_messages-uses-env_openai_api_key",
+        "edge:endpoint_delete_api_messages_id-calls-external_api_github_com",
+        "edge:endpoint_patch_api_jobs_id-calls-external_api_linear_app",
+        "edge:endpoint_get_admin_health-calls-external_status_example_com"
+      ])
+    );
+  });
+
   it("extracts MCP-style registered tools with schemas and side effects", async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), "snitch-mcp-tool-extractor-"));
     tempDirs.push(tempRoot);
@@ -479,6 +557,118 @@ describe("extractTypeScriptGraph", () => {
     );
   });
 
+  it("does not let unrelated safeguards suppress warnings for every external tool", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "snitch-companion-scope-"));
+    tempDirs.push(tempRoot);
+    await mkdir(join(tempRoot, "src"), { recursive: true });
+    await writeFile(
+      join(tempRoot, "src/safeguards.ts"),
+      [
+        "export const auditLogger = { write(entry: unknown) { return entry; } };",
+        "export const sanitizePayload = (value: unknown) => value;",
+        "export const notifyPermissionScope = { capability: \"notify\" };",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+    await writeFile(
+      join(tempRoot, "src/notify.ts"),
+      [
+        "import { auditLogger, sanitizePayload } from \"./safeguards\";",
+        "export const notifyTool = {",
+        "  name: \"notify\",",
+        "  async execute(input: unknown) {",
+        "    auditLogger.write({ tool: \"notify\" });",
+        "    return fetch(\"https://hooks.slack.com/services/x\", { body: JSON.stringify(sanitizePayload(input)) });",
+        "  }",
+        "};",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+    await writeFile(
+      join(tempRoot, "src/charge.ts"),
+      [
+        "export const chargeTool = {",
+        "  name: \"charge_card\",",
+        "  async execute(input: unknown) {",
+        "    return fetch(\"https://api.stripe.com/v1/charges\", { body: JSON.stringify(input) });",
+        "  }",
+        "};",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const result = extractTypeScriptGraph({ cwd: tempRoot });
+    const warningIds = result.snapshot.warnings.map((warning) => warning.id);
+
+    expect(warningIds).not.toContain("warning:tool_audit_log_missing:notify");
+    expect(warningIds).not.toContain("warning:secret_redaction_missing:notify");
+    expect(warningIds).not.toContain("warning:permission_scope_missing:notify");
+    expect(warningIds).toEqual(
+      expect.arrayContaining([
+        "warning:tool_audit_log_missing:charge_card",
+        "warning:secret_redaction_missing:charge_card",
+        "warning:permission_scope_missing:charge_card"
+      ])
+    );
+  });
+
+  it("connects generic registries, permission contracts, and unauthorized tests for non-demo tools", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "snitch-generic-companion-coverage-"));
+    tempDirs.push(tempRoot);
+    await mkdir(join(tempRoot, "src"), { recursive: true });
+    await mkdir(join(tempRoot, "tests"), { recursive: true });
+    await writeFile(
+      join(tempRoot, "src/notify.ts"),
+      [
+        "export const toolRegistry = [];",
+        "export const auditLogger = { write(entry: unknown) { return entry; } };",
+        "export const sanitizePayload = (value: unknown) => value;",
+        "export const notifyPermissionScope = { capability: \"notify\" };",
+        "export const notifyTool = {",
+        "  name: \"notify\",",
+        "  async execute(input: unknown) {",
+        "    auditLogger.write({ tool: \"notify\" });",
+        "    return fetch(\"https://hooks.slack.com/services/x\", { body: JSON.stringify(sanitizePayload(input)) });",
+        "  }",
+        "};",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+    await writeFile(
+      join(tempRoot, "tests/notify.test.ts"),
+      [
+        "import { notifyTool } from \"../src/notify\";",
+        "test(\"notify rejects unauthorized callers\", async () => {",
+        "  await expect(notifyTool.execute({ unauthorized: true })).rejects.toThrow(/unauthorized|permission/i);",
+        "});",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const result = extractTypeScriptGraph({ cwd: tempRoot });
+    const warningIds = result.snapshot.warnings.map((warning) => warning.id);
+    const edgeIds = result.snapshot.graph.edges.map((edge) => edge.id);
+
+    expect(warningIds).not.toContain("warning:tool_audit_log_missing:notify");
+    expect(warningIds).not.toContain("warning:secret_redaction_missing:notify");
+    expect(warningIds).not.toContain("warning:permission_scope_missing:notify");
+    expect(warningIds).not.toContain("warning:unauthorized_test_missing:notify");
+    expect(edgeIds).toEqual(
+      expect.arrayContaining([
+        "edge:service_tool_registry-registers-tool_notify",
+        "edge:tool_notify-writes-service_audit_logger",
+        "edge:tool_notify-calls-service_sanitize_payload",
+        "edge:tool_notify-satisfies-contract_notify_permission_scope",
+        "edge:test_notify_test_unauthorized-covers-tool_notify"
+      ])
+    );
+  });
+
   it("warns on route handlers that call an external system, not only agent tools", async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), "snitch-route-warning-"));
     tempDirs.push(tempRoot);
@@ -556,5 +746,57 @@ describe("extractTypeScriptGraph", () => {
     );
     expect(edgeIds).not.toContain("edge:endpoint_get_api_users-writes-database_prisma_user");
     expect(edgeIds).not.toContain("edge:endpoint_get_api_users-writes-database_supabase_audit_logs");
+  });
+
+  it("extracts Knex, TypeORM, and Mongoose reads and writes", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "snitch-orm-extractor-"));
+    tempDirs.push(tempRoot);
+    await mkdir(join(tempRoot, "app/api/users"), { recursive: true });
+    await writeFile(
+      join(tempRoot, "app/api/users/route.ts"),
+      [
+        "export async function GET() {",
+        "  await knex(\"users\").select(\"*\");",
+        "  await userRepository.find();",
+        "  await UserModel.findById(\"user_123\");",
+        "  return Response.json({ ok: true });",
+        "}",
+        "",
+        "export async function POST(request: Request) {",
+        "  const payload = await request.json();",
+        "  await db(\"audit_logs\").insert(payload);",
+        "  await dataSource.getRepository(Order).save(payload);",
+        "  await Invoice.deleteMany({ stale: true });",
+        "  return Response.json({ ok: true });",
+        "}",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const result = extractTypeScriptGraph({ cwd: tempRoot });
+    const nodeIds = result.snapshot.graph.nodes.map((node) => node.id);
+    const edgeIds = result.snapshot.graph.edges.map((edge) => edge.id);
+
+    expect(nodeIds).toEqual(
+      expect.arrayContaining([
+        "database:knex_users",
+        "database:typeorm_user",
+        "database:mongoose_user",
+        "database:knex_audit_logs",
+        "database:typeorm_order",
+        "database:mongoose_invoice"
+      ])
+    );
+    expect(edgeIds).toEqual(
+      expect.arrayContaining([
+        "edge:endpoint_get_api_users-reads-database_knex_users",
+        "edge:endpoint_get_api_users-reads-database_typeorm_user",
+        "edge:endpoint_get_api_users-reads-database_mongoose_user",
+        "edge:endpoint_post_api_users-writes-database_knex_audit_logs",
+        "edge:endpoint_post_api_users-writes-database_typeorm_order",
+        "edge:endpoint_post_api_users-writes-database_mongoose_invoice"
+      ])
+    );
   });
 });

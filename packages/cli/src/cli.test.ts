@@ -1196,7 +1196,7 @@ describe("snitch cli", () => {
     });
 
     expect(result.code).toBe(0);
-    expect(result.stdout).toContain("Nodes: 10");
+    expect(result.stdout).toContain("Nodes: 11");
     await expect(readFile(join(cwd, ".snitch/config.json"), "utf8")).resolves.toContain(demoRoot);
     await expect(readFile(join(cwd, ".snitch/graph.json"), "utf8")).resolves.toContain(
       "api.github.com API"
@@ -1465,6 +1465,9 @@ describe("snitch cli", () => {
     expect(
       state.graph.nodes.some((node) => node.id === "service:tool_audit_log" && node.meta?.role === "audit")
     ).toBe(true);
+    expect(state.warnings.some((warning) => warning.id === "warning:tool_audit_log_missing:create_issue")).toBe(
+      true
+    );
     expect(state.insights).toMatchObject({
       generatedAt: "2026-06-27T12:04:00.000Z",
       cerebras: {
@@ -1488,9 +1491,9 @@ describe("snitch cli", () => {
     });
     expect(latestTimelineEntry?.diffSummary).toMatchObject({
       addedNodes: 1,
-      removedNodes: 1,
-      addedEdges: 1,
-      removedEdges: 1
+      removedNodes: 0,
+      addedEdges: 0,
+      removedEdges: 0
     });
   });
 
@@ -1517,7 +1520,7 @@ describe("snitch cli", () => {
     expect(state.insights?.rankedWarnings[0]?.warningId).toBe(
       "warning:tool_audit_log_missing:create_issue"
     );
-    expect(state.insights?.narration).toContain("Snitch saw 10 added nodes");
+    expect(state.insights?.narration).toContain("Snitch saw 11 added nodes");
   });
 
   it("prints a paste-ready repair prompt for the next active warning", async () => {
