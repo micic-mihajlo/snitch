@@ -121,8 +121,11 @@ export default function App() {
     const top = rankedWarnings[0];
     const stillValid = rankedWarnings.some((warning) => warning.id === selectedWarningId);
     if (!stillValid) {
+      // The reviewer's pick is gone (a live update dropped it), so we are overriding their
+      // choice anyway — clear the manual flag so auto-pinning to the top finding resumes.
       setSelectedWarningId(top?.id);
       setSelectedNodeId(top ? affectedNodeId(currentSnapshot.graph, top.id) : undefined);
+      setUserPickedWarning(false);
       return;
     }
     if (!userPickedWarning && top && top.id !== selectedWarningId) {
