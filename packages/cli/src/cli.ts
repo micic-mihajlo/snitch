@@ -168,6 +168,15 @@ type LiveState = {
   memory?: MemoryArtifact;
 };
 
+type LiveChangedPayloadCacheEntry = {
+  checkedAtMs: number;
+  payload: SnitchChangedPayload;
+};
+
+const DEFAULT_LIVE_CHANGED_CACHE_MS = 2_000;
+const MAX_LIVE_CHANGED_CACHE_ENTRIES = 64;
+const liveChangedPayloadCache = new Map<string, LiveChangedPayloadCacheEntry>();
+
 type SnitchStatusPayload = {
   ok: true;
   cwd: string;
@@ -4273,12 +4282,15 @@ export async function readLiveState(
   cwd: string,
   options: {
     baseRef?: string;
+    changedCacheMs?: number;
+    now?: Date;
   } = {}
 ): Promise<LiveState> {
   const graph = JSON.parse(await readFile(resolve(cwd, ".snitch/graph.json"), "utf8")) as SnitchGraph;
   const warnings = await readWarnings(cwd, graph);
   const events = await readEvents(cwd);
   const sessionText = await readTextIfExists(cwd, ".snitch/session.json");
+  const session = sessionText ? JSON.parse(sessionText) : null;
   const insightsText = await readTextIfExists(cwd, ".snitch/insights.json");
   const diagramText = await readTextIfExists(cwd, ".snitch/diagram.json");
   const memoryText = await readTextIfExists(cwd, ".snitch/memory.json");
@@ -4286,7 +4298,7 @@ export async function readLiveState(
     ok: true,
     cwd,
     generatedAt: new Date().toISOString(),
-    session: sessionText ? JSON.parse(sessionText) : null,
+    session,
     graph,
     warnings,
     events: events.slice(-50),
@@ -4303,13 +4315,26 @@ export async function readLiveState(
   };
 
   try {
-    const changedFlags = new Map<string, string | true>();
+    const nowMs = options.now?.getTime() ?? Date.now();
+    const cacheMs = options.changedCacheMs ?? DEFAULT_LIVE_CHANGED_CACHE_MS;
+    const changedOptions: {
+      baseRef?: string;
+      cacheMs: number;
+      graph: SnitchGraph;
+      nowMs: number;
+      session: unknown;
+    } = {
+      cacheMs,
+      graph,
+      nowMs,
+      session
+    };
 
     if (options.baseRef) {
-      changedFlags.set("base", options.baseRef);
+      changedOptions.baseRef = options.baseRef;
     }
 
-    state.changed = await readSnitchChangedPayload(cwd, changedFlags);
+    state.changed = await readLiveChangedPayload(cwd, changedOptions);
   } catch {
     // Live state should keep rendering even when Git or session state is temporarily unavailable.
   }
@@ -4327,6 +4352,67 @@ export async function readLiveState(
   }
 
   return state;
+}
+
+async function readLiveChangedPayload(
+  cwd: string,
+  options: {
+    baseRef?: string;
+    cacheMs: number;
+    graph: SnitchGraph;
+    nowMs: number;
+    session: unknown;
+  }
+): Promise<SnitchChangedPayload> {
+  const changedFlags = new Map<string, string | true>();
+
+  if (options.baseRef) {
+    changedFlags.set("base", options.baseRef);
+  }
+
+  const resolvedBaseRef = resolveChangedBaseRef(changedFlags) ?? "";
+  const cacheKey = hashJson({
+    baseRef: resolvedBaseRef,
+    cwd,
+    graphId: options.graph.id,
+    target: liveSessionAnalysisTarget(options.session)
+  });
+
+  if (options.cacheMs > 0) {
+    const cached = liveChangedPayloadCache.get(cacheKey);
+
+    if (cached && options.nowMs - cached.checkedAtMs < options.cacheMs) {
+      return cached.payload;
+    }
+  }
+
+  const payload = await readSnitchChangedPayload(cwd, changedFlags);
+
+  if (options.cacheMs > 0) {
+    liveChangedPayloadCache.set(cacheKey, {
+      checkedAtMs: options.nowMs,
+      payload
+    });
+    pruneLiveChangedPayloadCache();
+  }
+
+  return payload;
+}
+
+function liveSessionAnalysisTarget(session: unknown): string {
+  return isRecord(session) && typeof session.analysisTarget === "string" ? session.analysisTarget : "";
+}
+
+function pruneLiveChangedPayloadCache(): void {
+  if (liveChangedPayloadCache.size <= MAX_LIVE_CHANGED_CACHE_ENTRIES) {
+    return;
+  }
+
+  const oldestKey = liveChangedPayloadCache.keys().next().value;
+
+  if (typeof oldestKey === "string") {
+    liveChangedPayloadCache.delete(oldestKey);
+  }
 }
 
 function handleLiveEvents(
@@ -5108,12 +5194,29 @@ function hashLiveState(state: LiveState): string {
     graph: state.graph,
     warnings: state.warnings,
     events: state.events,
-    changed: state.changed,
+    changed: stableChangedPayloadForHash(state.changed),
     diagram: state.diagram,
     insights: state.insights,
     memory: state.memory,
     artifacts: state.artifacts
   });
+}
+
+function stableChangedPayloadForHash(payload: SnitchChangedPayload | undefined): unknown {
+  if (!payload) {
+    return undefined;
+  }
+
+  return {
+    ok: payload.ok,
+    cwd: payload.cwd,
+    target: payload.target,
+    git: payload.git,
+    changedFiles: payload.changedFiles,
+    changedFindings: payload.changedFindings,
+    counts: payload.counts,
+    nextCommands: payload.nextCommands
+  };
 }
 
 async function readWarnings(cwd: string, graph: SnitchGraph): Promise<SnitchWarning[]> {

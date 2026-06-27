@@ -1455,6 +1455,57 @@ describe("snitch cli", () => {
     expect(state.artifacts.prComment).toContain("Snitch Review");
   });
 
+  it("caches changed-file payloads during rapid live dashboard reads", async () => {
+    const cwd = await tempRepo();
+    const target = join(cwd, "demo-target");
+    const assistantPath = join(target, "src/assistant.ts");
+    const newToolPath = join(target, "src/tools/new-tool.ts");
+
+    await git(cwd, ["init"]);
+    await git(cwd, ["config", "user.email", "snitch@example.com"]);
+    await git(cwd, ["config", "user.name", "Snitch Test"]);
+    await cp(demoRoot, target, { recursive: true });
+    await git(cwd, ["add", "."]);
+    await git(cwd, ["commit", "-m", "baseline"]);
+    await runCli(["analyze", "--target", target, "--task", "Wire an issue tool"], {
+      cwd,
+      now
+    });
+
+    await writeFile(
+      assistantPath,
+      `${await readFile(assistantPath, "utf8")}\n// live cache touch\n`,
+      "utf8"
+    );
+
+    const first = await readLiveState(cwd, {
+      changedCacheMs: 60_000,
+      now
+    });
+
+    await writeFile(newToolPath, "export const newTool = true;\n", "utf8");
+
+    const cached = await readLiveState(cwd, {
+      changedCacheMs: 60_000,
+      now: new Date("2026-06-27T12:00:01.000Z")
+    });
+    const uncached = await readLiveState(cwd, {
+      changedCacheMs: 0,
+      now: new Date("2026-06-27T12:00:02.000Z")
+    });
+
+    expect(first.changed?.changedFiles.map((file) => file.path)).toEqual([
+      "demo-target/src/assistant.ts"
+    ]);
+    expect(cached.changed?.changedFiles.map((file) => file.path)).toEqual([
+      "demo-target/src/assistant.ts"
+    ]);
+    expect(uncached.changed?.changedFiles.map((file) => file.path).sort()).toEqual([
+      "demo-target/src/assistant.ts",
+      "demo-target/src/tools/new-tool.ts"
+    ]);
+  });
+
   it("refreshes watched targets after filesystem changes without an agent hook", async () => {
     const cwd = await tempRepo();
     const target = join(cwd, "demo-target");

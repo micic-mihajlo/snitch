@@ -321,7 +321,7 @@ function DailyBrief({
   const topAction = changed && changed.git.available && changed.counts.changedFindings === 0
     ? "The current PR diff has no active Snitch findings. Use the Diagram and Changed views for review; repo-wide warnings remain in the rail below."
     : selectedWarning
-    ? selectedWarning.repairPrompt
+    ? warningActionText(selectedWarning)
     : "No active warning selected.";
   const warningDetail = changed?.git.available
     ? `${changed.counts.changedFindings} on changed`
@@ -492,6 +492,10 @@ function GraphSelectionStrip({
 
 function kindLabel(kind: GraphNode["kind"]): string {
   return kind === "endpoint" ? "route" : kind;
+}
+
+function warningActionText(warning: SnitchWarning): string {
+  return warning.repairPrompt?.trim() || warning.message || "No repair instruction available.";
 }
 
 function editorHref(cwd: string | undefined, file: string | undefined, line: number | undefined): string | undefined {

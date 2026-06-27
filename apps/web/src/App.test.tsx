@@ -242,6 +242,34 @@ describe("Snitch dashboard", () => {
     ).toHaveAttribute("href", "vscode://file//tmp/snitch-live/src/assistant/tools.ts:42");
   });
 
+  it("keeps action panels readable when a warning lacks a repair prompt", async () => {
+    const replay = getDemoReplay();
+    const snapshot = withoutWarningRepairPrompts(getReviewSnapshot(replay));
+    const firstWarning = snapshot.warnings[0];
+
+    if (!firstWarning) {
+      throw new Error("Demo replay is missing warnings.");
+    }
+
+    window.history.replaceState(null, "", "/?snitchLive=http://127.0.0.1:4767");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => liveApiStateFor(snapshot, 1)
+      }))
+    );
+
+    render(<App />);
+
+    expect(await screen.findByRole("region", { name: "Daily Brief" })).toHaveTextContent(
+      firstWarning.message
+    );
+    expect(screen.getByRole("region", { name: "Selected repair prompt" })).toHaveTextContent(
+      firstWarning.message
+    );
+  });
+
   it("updates live Snitch artifacts from server-sent state events", async () => {
     const replay = getDemoReplay();
     const initialSnapshot = replay[0];
@@ -404,5 +432,19 @@ function withToolAnchor(snapshot: ReplaySnapshot): ReplaySnapshot {
           : node
       )
     }
+  };
+}
+
+function withoutWarningRepairPrompts(snapshot: ReplaySnapshot): ReplaySnapshot {
+  return {
+    ...snapshot,
+    warnings: snapshot.warnings.map((warning) => ({
+      id: warning.id,
+      kind: warning.kind,
+      severity: warning.severity,
+      title: warning.title,
+      message: warning.message,
+      evidence: warning.evidence
+    }))
   };
 }

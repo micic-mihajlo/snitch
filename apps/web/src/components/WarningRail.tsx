@@ -12,6 +12,10 @@ type Props = {
 
 export function WarningRail({ warnings, selectedWarning, rankingByWarningId, onSelect }: Props) {
   const selectedRanking = selectedWarning ? rankingByWarningId?.[selectedWarning.id] : undefined;
+  const selectedRepairPrompt = selectedWarning?.repairPrompt?.trim();
+  const selectedRepairText = selectedWarning
+    ? selectedRepairPrompt || selectedWarning.message || "No repair instruction available."
+    : "";
 
   return (
     <aside className="warning-panel" aria-label="Warning Rail">
@@ -56,12 +60,12 @@ export function WarningRail({ warnings, selectedWarning, rankingByWarningId, onS
         <div className="repair-panel" role="region" aria-label="Selected repair prompt">
           <div className="repair-panel-heading">
             <p className="eyebrow">Repair prompt</p>
-            {selectedWarning.repairPrompt ? (
-              <CopyButton value={selectedWarning.repairPrompt} label="Copy prompt" />
+            {selectedRepairPrompt ? (
+              <CopyButton value={selectedRepairPrompt} label="Copy prompt" />
             ) : null}
           </div>
           {selectedRanking ? <p className="rank-reason">{selectedRanking.reason}</p> : null}
-          <p>{selectedWarning.repairPrompt}</p>
+          <p>{selectedRepairText}</p>
         </div>
       ) : null}
     </aside>
