@@ -163,7 +163,7 @@ export async function narrateWithCerebras(
       body: JSON.stringify({
         model: options.model,
         messages: options.input.messages,
-        max_completion_tokens: 180,
+        max_completion_tokens: cerebrasMaxCompletionTokens(options.model, 180, 2000),
         temperature: 0.2
       })
     });
@@ -221,7 +221,7 @@ export async function rankWarningsWithCerebras(options: {
       body: JSON.stringify({
         model: options.model,
         messages: options.input.messages,
-        max_completion_tokens: 500,
+        max_completion_tokens: cerebrasMaxCompletionTokens(options.model, 500, 3000),
         response_format: { type: "json_object" },
         temperature: 0
       })
@@ -253,6 +253,10 @@ export async function rankWarningsWithCerebras(options: {
       model: options.model
     };
   }
+}
+
+function cerebrasMaxCompletionTokens(model: string, standard: number, reasoning: number): number {
+  return model.toLowerCase().includes("glm") ? reasoning : standard;
 }
 
 export function createStaticNarration(diff: GraphDiff, warnings: SnitchWarning[]): string {

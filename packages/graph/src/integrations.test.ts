@@ -91,6 +91,34 @@ describe("Cerebras integration", () => {
     });
   });
 
+  it("uses a larger completion budget for GLM narration models", async () => {
+    const input = createCerebrasNarrationInput({
+      task: "Add the external issue-creation tool.",
+      diff,
+      warnings: reviewSnapshot.warnings,
+      repoRules: []
+    });
+    let requestedTokens = 0;
+    const result = await narrateWithCerebras({
+      apiKey: "test-key",
+      model: "zai-glm-4.7",
+      input,
+      fetcher: async (_url, init) => {
+        requestedTokens = JSON.parse(String(init?.body)).max_completion_tokens;
+
+        return new Response(
+          JSON.stringify({
+            choices: [{ message: { content: "Graph changed fast." } }]
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+    });
+
+    expect(result.status).toBe("ok");
+    expect(requestedTokens).toBe(2000);
+  });
+
   it("builds compact warning triage input for strict JSON ranking", () => {
     const input = createCerebrasWarningTriageInput({
       task: "Add the external issue-creation tool.",
@@ -150,6 +178,50 @@ describe("Cerebras integration", () => {
       repairPrompt: "Gate create_issue behind a session-scoped permission check."
     });
     expect(result.rankedWarnings).toHaveLength(reviewSnapshot.warnings.length);
+  });
+
+  it("uses a larger completion budget for GLM warning triage models", async () => {
+    const input = createCerebrasWarningTriageInput({
+      task: "Add the external issue-creation tool.",
+      warnings: reviewSnapshot.warnings,
+      repoRules: []
+    });
+    let requestedTokens = 0;
+    const result = await rankWarningsWithCerebras({
+      apiKey: "test-key",
+      model: "zai-glm-4.7",
+      input,
+      warnings: reviewSnapshot.warnings,
+      fetcher: async (_url, init) => {
+        requestedTokens = JSON.parse(String(init?.body)).max_completion_tokens;
+
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    rankedWarnings: [
+                      {
+                        warningId: "warning:tool_audit_log_missing:create_issue",
+                        rank: 1,
+                        priority: "high",
+                        reason: "Audit logging is still missing.",
+                        repairPrompt: "Add audit logging around create_issue."
+                      }
+                    ]
+                  })
+                }
+              }
+            ]
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+    });
+
+    expect(result.status).toBe("ok");
+    expect(requestedTokens).toBe(3000);
   });
 
   it("returns deterministic fallback rankings when warning triage is disabled", async () => {
