@@ -187,6 +187,13 @@ type MemoryArtifact = {
   };
 };
 
+type RepairPromptContext = {
+  warning: SnitchWarning;
+  task: string;
+  target: string;
+  ranking?: RankedWarning;
+};
+
 const eventsFile = ".snitch/events.jsonl";
 const hookFile = ".snitch/hooks/codex-hook.mjs";
 const defaultTask =
@@ -266,6 +273,10 @@ export async function runCli(args: string[], options: RunCliOptions = {}): Promi
           now
         })
       );
+    }
+
+    if (command === "repair-prompt") {
+      return ok(await readRepairPrompt(cwd, parsed.flags));
     }
 
     if (command === "finalize") {
@@ -914,6 +925,136 @@ async function writeInsightArtifacts(cwd: string, options: InsightOptions): Prom
     `- Ranked warnings: ${artifact.rankedWarnings.length}`,
     "- Updated: .snitch/insights.json"
   ].join("\n") + "\n";
+}
+
+async function readRepairPrompt(cwd: string, flags: ParsedArgs["flags"]): Promise<string> {
+  const graph = JSON.parse(await readFile(resolve(cwd, ".snitch/graph.json"), "utf8")) as SnitchGraph;
+  const warnings = await readWarnings(cwd, graph);
+
+  if (warnings.length === 0) {
+    return "No active Snitch warnings.\n";
+  }
+
+  const sessionText = await readTextIfExists(cwd, ".snitch/session.json");
+  const insightsText = await readTextIfExists(cwd, ".snitch/insights.json");
+  const session = sessionText ? (JSON.parse(sessionText) as Partial<SnitchSession>) : {};
+  const insights = insightsText ? (JSON.parse(insightsText) as Partial<InsightArtifact>) : {};
+  const rankings = Array.isArray(insights.rankedWarnings) ? insights.rankedWarnings : [];
+  const warningIdFlag = flags.get("warning");
+  const requestedWarningId = warningIdFlag && warningIdFlag !== true ? warningIdFlag : undefined;
+  const selectedWarnings = flags.has("all")
+    ? orderWarningsForRepair(warnings, rankings)
+    : [selectRepairWarning(warnings, rankings, requestedWarningId)];
+  const task = typeof session.task === "string" ? session.task : defaultTask;
+  const target = typeof session.analysisTarget === "string" ? session.analysisTarget : ".";
+
+  return selectedWarnings
+    .map((warning) => {
+      const ranking = rankings.find((item) => item.warningId === warning.id);
+      const context: RepairPromptContext = {
+        warning,
+        task,
+        target
+      };
+
+      if (ranking) {
+        context.ranking = ranking;
+      }
+
+      return formatRepairPrompt(context);
+    })
+    .join("\n---\n") + "\n";
+}
+
+function selectRepairWarning(
+  warnings: SnitchWarning[],
+  rankings: RankedWarning[],
+  requestedWarningId: string | undefined
+): SnitchWarning {
+  if (requestedWarningId) {
+    const requested = warnings.find((warning) => warning.id === requestedWarningId);
+
+    if (!requested) {
+      throw new Error(`No active Snitch warning matches ${requestedWarningId}.`);
+    }
+
+    return requested;
+  }
+
+  const [firstWarning] = orderWarningsForRepair(warnings, rankings);
+
+  if (!firstWarning) {
+    throw new Error("No active Snitch warnings.");
+  }
+
+  return firstWarning;
+}
+
+function orderWarningsForRepair(warnings: SnitchWarning[], rankings: RankedWarning[]): SnitchWarning[] {
+  const rankingByWarningId = new Map(rankings.map((ranking) => [ranking.warningId, ranking]));
+
+  return [...warnings].sort((left, right) => {
+    const leftRanking = rankingByWarningId.get(left.id);
+    const rightRanking = rankingByWarningId.get(right.id);
+
+    if (leftRanking && rightRanking) {
+      return leftRanking.rank - rightRanking.rank;
+    }
+
+    if (leftRanking) {
+      return -1;
+    }
+
+    if (rightRanking) {
+      return 1;
+    }
+
+    return warningSeverityRank(right.severity) - warningSeverityRank(left.severity);
+  });
+}
+
+function formatRepairPrompt(context: RepairPromptContext): string {
+  const reason = context.ranking?.reason;
+  const instruction = context.ranking?.repairPrompt || context.warning.repairPrompt || context.warning.message;
+
+  return [
+    "# Snitch Repair Prompt",
+    "",
+    `Task: ${context.task}`,
+    `Target: ${context.target}`,
+    "",
+    `Warning: ${context.warning.title}`,
+    `Warning ID: ${context.warning.id}`,
+    `Severity: ${context.warning.severity}`,
+    context.ranking ? `Priority: #${context.ranking.rank} ${context.ranking.priority}` : undefined,
+    reason ? `Why now: ${reason}` : undefined,
+    "",
+    "Evidence:",
+    ...context.warning.evidence.map((item) => `- ${item}`),
+    "",
+    "Instruction for the coding agent:",
+    instruction,
+    "",
+    "Acceptance checks:",
+    `- Re-run \`pnpm snitch analyze --target ${shellArgForPrompt(context.target)} --task ${shellArgForPrompt(context.task)}\`.`,
+    `- Confirm warning \`${context.warning.id}\` is gone from \`.snitch/warnings.json\`.`,
+    "- Run the relevant tests for the changed tool, route, or permission path."
+  ].filter((line): line is string => line !== undefined).join("\n");
+}
+
+function warningSeverityRank(severity: SnitchWarning["severity"]): number {
+  return {
+    info: 0,
+    low: 1,
+    medium: 2,
+    high: 3
+  }[severity];
+}
+
+function shellArgForPrompt(value: string): string {
+  return value.includes(" ") || value.includes("'") || value.includes("\"")
+    ? shellQuote(value)
+    : value;
 }
 
 async function rememberWarningsOnFinalize(cwd: string, now: Date): Promise<MemoryArtifact> {
@@ -1609,6 +1750,7 @@ Use Snitch when a task changes routes, tools, schemas, auth, permissions, extern
 
 - Run \`pnpm snitch analyze --target . --task "<current task>"\` after meaningful implementation changes.
 - Run \`pnpm snitch insights --offline\` when provider credentials are unavailable.
+- Run \`pnpm snitch repair-prompt\` when warnings are active, then implement the returned agent prompt.
 - Run \`pnpm snitch finalize\` before preparing a pull request or handoff.
 - Treat \`.snitch/graph.json\`, \`.snitch/warnings.json\`, \`.snitch/mermaid.mmd\`, \`.snitch/pr-comment.md\`, and \`.snitch/handoff.md\` as generated evidence.
 - Do not give the coding agent GitHub write access for Snitch publishing; publish artifacts through a separate workflow.
@@ -1945,6 +2087,7 @@ function helpText(): string {
     "  snitch analyze [--cwd <output-repo>] [--target <ts-repo>] [--task <task>]",
     "  snitch watch [--cwd <repo>] [--target <ts-repo>] [--port <port>] [--interval <ms>] [--scan-interval <ms>] [--no-files]",
     "  snitch insights [--cwd <repo>] [--offline]",
+    "  snitch repair-prompt [--cwd <repo>] [--warning <id>] [--all]",
     "  snitch status [--cwd <repo>]",
     "  snitch finalize [--cwd <repo>]",
     "  snitch install-git-hooks [--cwd <repo>] [--force]",

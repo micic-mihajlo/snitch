@@ -19,6 +19,7 @@ This repo now includes a working first slice:
 - local live server: `pnpm snitch watch` serves `.snitch` artifacts and refreshes the graph from file changes
 - graph scope controls for all, changed, and selected-warning impact views
 - insights artifact: `pnpm snitch insights` writes Cerebras narration, warning ranking, repair prompts, and Backboard repo-rule status
+- paste-ready repair prompt: `pnpm snitch repair-prompt` prints the next agent fix from active warnings
 - finalize memory lane: `pnpm snitch finalize` writes Backboard warning-decision memory with hashed evidence only
 - PR publish bridge: `pnpm snitch publish-github` posts or updates one top-level GitHub PR comment from `.snitch/pr-comment.md`
 - scripted repair pass: `pnpm demo:repair` adds the missing companion work and regenerates warning-free artifacts
@@ -49,6 +50,8 @@ printf '{"tool_name":"apply_patch","file_path":"src/tools/create-issue.ts"}' | p
 pnpm snitch analyze --target apps/demo-app --task "Add an external issue-creation tool"
 pnpm snitch insights --offline
 pnpm snitch insights
+pnpm snitch repair-prompt
+pnpm snitch repair-prompt --warning warning:permission_scope_missing:create_issue
 pnpm snitch watch --target apps/demo-app --port 4767 --scan-interval 300
 pnpm dev:live
 pnpm demo:live --offline-integrations
@@ -103,6 +106,8 @@ It does not store the raw hook payload. File-changing events refresh the configu
 - `.snitch/insights.json`
 
 `snitch finalize` also writes `.snitch/memory.json`. With Backboard credentials, it remembers active warning decisions as safe metadata and evidence hashes; without credentials, it records disabled status so the live dashboard can show the memory lane honestly.
+
+`snitch repair-prompt` is the coding-agent handoff path. It reads the active warning set and prints a paste-ready prompt for the next fix. If `.snitch/insights.json` contains Cerebras warning ranks, Snitch uses that ordering; otherwise it falls back to deterministic severity ordering. Use `--warning <id>` to pin a warning or `--all` to print every active repair prompt.
 
 `snitch install-git-hooks` installs Snitch-managed `post-commit` and `pre-push` hooks. They refresh local `.snitch` artifacts from the repo graph and intentionally do not publish to GitHub. Existing non-Snitch hooks are left alone unless `--force` is passed.
 

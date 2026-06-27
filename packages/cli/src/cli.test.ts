@@ -58,6 +58,9 @@ describe("snitch cli", () => {
     await expect(readFile(join(cwd, ".cursor/rules/snitch.mdc"), "utf8")).resolves.toContain(
       "Snitch local verification"
     );
+    await expect(readFile(join(cwd, ".cursor/rules/snitch.mdc"), "utf8")).resolves.toContain(
+      "pnpm snitch repair-prompt"
+    );
     await expect(readFile(join(cwd, ".claude/settings.local.json"), "utf8")).resolves.toContain(
       "SNITCH_SOURCE=claude"
     );
@@ -289,6 +292,81 @@ describe("snitch cli", () => {
       "warning:tool_audit_log_missing:create_issue"
     );
     expect(state.insights?.narration).toContain("Snitch saw 10 added nodes");
+  });
+
+  it("prints a paste-ready repair prompt for the next active warning", async () => {
+    const cwd = await tempRepo();
+
+    await runCli(["analyze", "--target", demoRoot, "--task", "Wire an issue tool"], {
+      cwd,
+      now
+    });
+    await runCli(["insights", "--offline"], {
+      cwd,
+      now: new Date("2026-06-27T12:03:00.000Z")
+    });
+
+    const result = await runCli(["repair-prompt"], { cwd });
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("# Snitch Repair Prompt");
+    expect(result.stdout).toContain("Warning: No audit trail for external tool calls");
+    expect(result.stdout).toContain("Warning ID: warning:tool_audit_log_missing:create_issue");
+    expect(result.stdout).toContain("Instruction for the coding agent:");
+    expect(result.stdout).toContain("Add an audit log write around create_issue calls");
+    expect(result.stdout).toContain("Confirm warning `warning:tool_audit_log_missing:create_issue` is gone");
+  });
+
+  it("uses ranked warning insights when choosing the next repair prompt", async () => {
+    const cwd = await tempRepo();
+
+    await runCli(["analyze", "--target", demoRoot, "--task", "Wire an issue tool"], {
+      cwd,
+      now
+    });
+    await writeFile(
+      join(cwd, ".snitch/insights.json"),
+      JSON.stringify(
+        {
+          generatedAt: "2026-06-27T12:04:00.000Z",
+          narration: "Permission boundary first.",
+          cerebras: {
+            status: "ok",
+            triageStatus: "ok"
+          },
+          backboard: {
+            status: "disabled",
+            rules: []
+          },
+          rankedWarnings: [
+            {
+              warningId: "warning:permission_scope_missing:create_issue",
+              rank: 1,
+              priority: "critical",
+              reason: "The tool can create external issues without a task-scoped grant.",
+              repairPrompt: "Gate create_issue behind a per-session permission grant before provider calls."
+            }
+          ]
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+
+    const result = await runCli(["repair-prompt"], { cwd });
+    const pinnedResult = await runCli(
+      ["repair-prompt", "--warning", "warning:secret_redaction_missing:create_issue"],
+      { cwd }
+    );
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("Warning: No per-session permission boundary");
+    expect(result.stdout).toContain("Priority: #1 critical");
+    expect(result.stdout).toContain("Why now: The tool can create external issues");
+    expect(result.stdout).toContain("Gate create_issue behind a per-session permission grant");
+    expect(pinnedResult.stdout).toContain("Warning: No secret redaction around provider data");
+    expect(pinnedResult.stdout).not.toContain("No per-session permission boundary");
   });
 
   it("finalizes PR-ready artifacts from the background session", async () => {
