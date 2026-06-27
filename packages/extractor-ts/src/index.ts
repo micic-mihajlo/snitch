@@ -37,12 +37,24 @@ type MutableGraph = {
   warnings: SnitchWarning[];
   externalAccesses: GraphAccess[];
   envAccesses: GraphAccess[];
+  databaseAccesses: DatabaseAccess[];
 };
 
 type GraphAccess = {
   nodeId: string;
   file: string;
   line: number;
+};
+
+type DatabaseAccess = GraphAccess & {
+  edgeKind: "reads" | "writes";
+};
+
+type DatabaseCall = {
+  source: "prisma" | "drizzle" | "supabase";
+  entity: string;
+  operation: string;
+  edgeKind: "reads" | "writes";
 };
 
 export function extractTypeScriptGraph(options: ExtractTypeScriptGraphOptions): ExtractTypeScriptGraphResult {
@@ -71,7 +83,8 @@ export function extractTypeScriptGraph(options: ExtractTypeScriptGraphOptions): 
     edges: new Map(),
     warnings: [],
     externalAccesses: [],
-    envAccesses: []
+    envAccesses: [],
+    databaseAccesses: []
   };
 
   for (const sourceFile of project.getSourceFiles()) {
@@ -80,6 +93,7 @@ export function extractTypeScriptGraph(options: ExtractTypeScriptGraphOptions): 
     extractToolSurface(options.cwd, sourceFile, graph);
     extractSchemaSurface(options.cwd, sourceFile, graph);
     extractProviderSurface(options.cwd, sourceFile, graph);
+    extractDatabaseSurface(options.cwd, sourceFile, graph);
     extractCompanionSurface(options.cwd, sourceFile, graph);
     extractTestSurface(options.cwd, sourceFile, graph);
   }
@@ -273,6 +287,40 @@ function extractProviderSurface(cwd: string, sourceFile: SourceFile, graph: Muta
       });
       graph.envAccesses.push({ nodeId: `env:${envName}`, file, line });
     }
+  }
+}
+
+function extractDatabaseSurface(cwd: string, sourceFile: SourceFile, graph: MutableGraph): void {
+  const file = relativePath(cwd, sourceFile);
+
+  for (const call of sourceFile.getDescendantsOfKind(SyntaxKind.CallExpression)) {
+    const databaseCall = getDatabaseCall(call);
+
+    if (!databaseCall) {
+      continue;
+    }
+
+    const nodeId = databaseNodeId(databaseCall);
+    const line = call.getStartLineNumber();
+
+    addNode(graph, {
+      id: nodeId,
+      kind: "database",
+      label: databaseLabel(databaseCall),
+      file,
+      line,
+      meta: {
+        source: databaseCall.source,
+        entity: databaseCall.entity,
+        operation: databaseCall.operation
+      }
+    });
+    graph.databaseAccesses.push({
+      nodeId,
+      file,
+      line,
+      edgeKind: databaseCall.edgeKind
+    });
   }
 }
 
@@ -475,6 +523,16 @@ function connectFileLocalSurfaces(graph: MutableGraph): void {
         "uses_secret"
       );
     }
+
+    for (const database of graph.databaseAccesses.filter((access) => isAccessInActorRange(actor, access))) {
+      addEdgeIfMissing(
+        graph,
+        `edge:${edgeIdPart(actor.id)}-${database.edgeKind}-${edgeIdPart(database.nodeId)}`,
+        actor.id,
+        database.nodeId,
+        database.edgeKind
+      );
+    }
   }
 }
 
@@ -610,6 +668,105 @@ function safeHost(url: string): string | undefined {
   }
 }
 
+function getDatabaseCall(call: CallExpression): DatabaseCall | undefined {
+  return getPrismaCall(call) ?? getDrizzleCall(call) ?? getSupabaseCall(call);
+}
+
+function getPrismaCall(call: CallExpression): DatabaseCall | undefined {
+  const expressionText = call.getExpression().getText();
+  const match = expressionText.match(/(?:^|\.)prisma\.([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)$/);
+
+  if (!match?.[1] || !match[2] || !databaseMethods.has(match[2])) {
+    return undefined;
+  }
+
+  return {
+    source: "prisma",
+    entity: match[1],
+    operation: match[2],
+    edgeKind: writeDatabaseMethods.has(match[2]) ? "writes" : "reads"
+  };
+}
+
+function getDrizzleCall(call: CallExpression): DatabaseCall | undefined {
+  const expressionText = call.getExpression().getText();
+  const writeMatch = expressionText.match(/(?:^|\.)db\.(insert|update|delete)$/);
+
+  if (writeMatch?.[1]) {
+    const entity = getDatabaseEntityFromArgument(call.getArguments()[0]);
+
+    if (entity) {
+      return {
+        source: "drizzle",
+        entity,
+        operation: writeMatch[1],
+        edgeKind: "writes"
+      };
+    }
+  }
+
+  if (expressionText.endsWith(".from") && expressionText.includes("db.select(")) {
+    const entity = getDatabaseEntityFromArgument(call.getArguments()[0]);
+
+    if (entity) {
+      return {
+        source: "drizzle",
+        entity,
+        operation: "select",
+        edgeKind: "reads"
+      };
+    }
+  }
+
+  const queryMatch = expressionText.match(/(?:^|\.)db\.query\.([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)$/);
+
+  if (queryMatch?.[1] && queryMatch[2] && readDatabaseMethods.has(queryMatch[2])) {
+    return {
+      source: "drizzle",
+      entity: queryMatch[1],
+      operation: queryMatch[2],
+      edgeKind: "reads"
+    };
+  }
+
+  return undefined;
+}
+
+function getSupabaseCall(call: CallExpression): DatabaseCall | undefined {
+  const callText = call.getText();
+  const match = callText.match(/\.from\(\s*["'`]([^"'`]+)["'`]\s*\).*?\.(select|insert|update|upsert|delete)\s*\(/);
+
+  if (!match?.[1] || !match[2]) {
+    return undefined;
+  }
+
+  return {
+    source: "supabase",
+    entity: match[1],
+    operation: match[2],
+    edgeKind: match[2] === "select" ? "reads" : "writes"
+  };
+}
+
+function getDatabaseEntityFromArgument(node: TsMorphNode | undefined): string | undefined {
+  const literal = getStringLiteralValue(node);
+
+  if (literal) {
+    return literal;
+  }
+
+  const text = node?.getText();
+
+  if (!text || !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(text)) {
+    return undefined;
+  }
+
+  return text;
+}
+
+const readDatabaseMethods = new Set(["aggregate", "count", "findFirst", "findMany", "findUnique", "groupBy"]);
+const writeDatabaseMethods = new Set(["create", "createMany", "delete", "deleteMany", "insert", "update", "updateMany", "upsert"]);
+const databaseMethods = new Set([...readDatabaseMethods, ...writeDatabaseMethods]);
 const httpMethods = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
 
 function routePathFromFile(file: string): string | undefined {
@@ -667,6 +824,14 @@ function schemaLabel(name: string): string {
   }
 
   return `${name} schema`;
+}
+
+function databaseNodeId(databaseCall: DatabaseCall): string {
+  return `database:${slugId(databaseCall.source)}_${slugId(databaseCall.entity)}`;
+}
+
+function databaseLabel(databaseCall: DatabaseCall): string {
+  return `${humanizeId(databaseCall.entity)} ${databaseCall.source} ${databaseCall.edgeKind === "reads" ? "read" : "write"}`;
 }
 
 function inferToolCapability(name: string): string {

@@ -161,4 +161,51 @@ describe("extractTypeScriptGraph", () => {
     );
     expect(edgeIds).not.toContain("edge:endpoint_get_api_messages-uses-env_openai_api_key");
   });
+
+  it("extracts database reads and writes from common TypeScript data clients", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "snitch-database-extractor-"));
+    tempDirs.push(tempRoot);
+    await mkdir(join(tempRoot, "src/app/api/users"), { recursive: true });
+    await writeFile(
+      join(tempRoot, "src/app/api/users/route.ts"),
+      [
+        "export async function GET() {",
+        "  await db.select().from(messages);",
+        "  return Response.json({ ok: true });",
+        "}",
+        "",
+        "export async function POST(request: Request) {",
+        "  const payload = await request.json();",
+        "  await prisma.user.create({ data: payload });",
+        "  await supabase.from(\"audit_logs\").insert(payload);",
+        "  return Response.json({ ok: true });",
+        "}",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const result = extractTypeScriptGraph({ cwd: tempRoot });
+    const nodeIds = result.snapshot.graph.nodes.map((node) => node.id);
+    const edgeIds = result.snapshot.graph.edges.map((edge) => edge.id);
+
+    expect(nodeIds).toEqual(
+      expect.arrayContaining([
+        "endpoint:GET:/api/users",
+        "endpoint:POST:/api/users",
+        "database:drizzle_messages",
+        "database:prisma_user",
+        "database:supabase_audit_logs"
+      ])
+    );
+    expect(edgeIds).toEqual(
+      expect.arrayContaining([
+        "edge:endpoint_get_api_users-reads-database_drizzle_messages",
+        "edge:endpoint_post_api_users-writes-database_prisma_user",
+        "edge:endpoint_post_api_users-writes-database_supabase_audit_logs"
+      ])
+    );
+    expect(edgeIds).not.toContain("edge:endpoint_get_api_users-writes-database_prisma_user");
+    expect(edgeIds).not.toContain("edge:endpoint_get_api_users-writes-database_supabase_audit_logs");
+  });
 });

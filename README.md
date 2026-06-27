@@ -17,6 +17,7 @@ This repo now includes a working first slice:
 - narrow TypeScript extractor for real repo graph generation
 - target-aware hook refresh: file-changing events regenerate code-derived artifacts
 - local live server: `pnpm snitch watch` serves `.snitch` artifacts and refreshes the graph from file changes
+- database graph extraction for common Prisma, Drizzle, and Supabase read/write calls
 - graph scope controls for all, changed, and selected-warning impact views
 - insights artifact: `pnpm snitch insights` writes Cerebras narration, warning ranking, repair prompts, and Backboard repo-rule status
 - paste-ready repair prompt: `pnpm snitch repair-prompt` prints the next agent fix from active warnings
