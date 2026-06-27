@@ -348,9 +348,20 @@ describe("snitch cli", () => {
       id: 3,
       method: "ping"
     });
-    const impact = await handleMcpJsonRpcMessage(cwd, {
+    const check = await handleMcpJsonRpcMessage(cwd, {
       jsonrpc: "2.0",
       id: 4,
+      method: "tools/call",
+      params: {
+        name: "snitch_check",
+        arguments: {
+          failOn: "medium"
+        }
+      }
+    });
+    const impact = await handleMcpJsonRpcMessage(cwd, {
+      jsonrpc: "2.0",
+      id: 5,
       method: "tools/call",
       params: {
         name: "snitch_impact",
@@ -361,7 +372,7 @@ describe("snitch cli", () => {
     });
     const repair = await handleMcpJsonRpcMessage(cwd, {
       jsonrpc: "2.0",
-      id: 5,
+      id: 6,
       method: "tools/call",
       params: {
         name: "snitch_repair_prompt",
@@ -376,6 +387,19 @@ describe("snitch cli", () => {
     };
     const toolsResult = tools as { result: { tools: Array<{ name: string }> } };
     const pingResult = ping as { result: Record<string, never> };
+    const checkResult = check as {
+      result: {
+        isError?: boolean;
+        structuredContent: {
+          ok: boolean;
+          failOn: string;
+          exitCode: number;
+          counts: {
+            blockingWarnings: number;
+          };
+        };
+      };
+    };
     const impactResult = impact as {
       result: {
         isError?: boolean;
@@ -396,9 +420,15 @@ describe("snitch cli", () => {
     expect(pingResult.result).toEqual({});
     expect(toolsResult.result.tools.map((tool) => tool.name)).toEqual([
       "snitch_status",
+      "snitch_check",
       "snitch_impact",
       "snitch_repair_prompt"
     ]);
+    expect(checkResult.result.isError).toBe(true);
+    expect(checkResult.result.structuredContent.ok).toBe(false);
+    expect(checkResult.result.structuredContent.failOn).toBe("medium");
+    expect(checkResult.result.structuredContent.exitCode).toBe(1);
+    expect(checkResult.result.structuredContent.counts.blockingWarnings).toBe(4);
     expect(impactResult.result.isError).toBe(false);
     expect(impactResult.result.structuredContent.warning.id).toBe(
       "warning:secret_redaction_missing:create_issue"

@@ -1265,6 +1265,35 @@ function createMcpTools(): Array<Record<string, unknown>> {
       }
     },
     {
+      name: "snitch_check",
+      title: "Snitch Check",
+      description:
+        "Run the local Snitch verification gate, refresh .snitch artifacts, and return blocking warnings as structured JSON.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          cwd: {
+            type: "string",
+            description: "Repository root. Defaults to the MCP server working directory."
+          },
+          target: {
+            type: "string",
+            description: "TypeScript target to analyze. Defaults to the stored Snitch analysis target."
+          },
+          task: {
+            type: "string",
+            description: "Task intent used in generated artifacts. Defaults to the stored Snitch task."
+          },
+          failOn: {
+            type: "string",
+            enum: ["info", "low", "medium", "high"],
+            description: "Minimum warning severity that fails the gate. Defaults to high."
+          }
+        },
+        additionalProperties: false
+      }
+    },
+    {
       name: "snitch_impact",
       title: "Snitch Warning Impact",
       description:
@@ -1323,6 +1352,10 @@ async function callMcpTool(cwd: string, params: unknown): Promise<McpToolResult>
       return jsonMcpToolResult(payload);
     }
 
+    if (name === "snitch_check") {
+      return await callMcpCheckTool(toolCwd, args);
+    }
+
     if (name === "snitch_impact") {
       const payload = await readSnitchImpactPayload(toolCwd, mcpFlags(args));
       return jsonMcpToolResult(payload);
@@ -1352,6 +1385,35 @@ async function callMcpTool(cwd: string, params: unknown): Promise<McpToolResult>
   }
 }
 
+async function callMcpCheckTool(cwd: string, args: Record<string, unknown>): Promise<McpToolResult> {
+  const session = await readSessionIfExists(cwd);
+  const targetInput = typeof args.target === "string"
+    ? args.target
+    : session?.analysisTarget ?? ".";
+  const target = resolveStoredTarget(cwd, targetInput);
+  const task = typeof args.task === "string"
+    ? args.task
+    : session?.task ?? defaultTask;
+  const flags = new Map<string, string | true>([["json", true]]);
+
+  if (typeof args.failOn === "string") {
+    flags.set("fail-on", args.failOn);
+  }
+
+  const result = await checkTypeScriptRepo(cwd, target, task, new Date(), flags);
+  const structuredContent = parseStructuredToolJson(result.stdout, {
+    ok: result.code === 0,
+    exitCode: result.code,
+    stdout: result.stdout
+  });
+
+  return {
+    content: [{ type: "text", text: `${JSON.stringify(structuredContent, null, 2)}\n` }],
+    structuredContent,
+    isError: result.code !== 0
+  };
+}
+
 function jsonMcpToolResult(value: unknown): McpToolResult {
   return {
     content: [{ type: "text", text: JSON.stringify(value, null, 2) }],
@@ -1372,6 +1434,34 @@ function mcpFlags(args: Record<string, unknown>): ParsedArgs["flags"] {
   }
 
   return flags;
+}
+
+async function readSessionIfExists(cwd: string): Promise<SnitchSession | undefined> {
+  try {
+    return await readSession(cwd);
+  } catch {
+    return undefined;
+  }
+}
+
+function parseStructuredToolJson(
+  text: string,
+  fallback: Record<string, unknown>
+): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(text) as unknown;
+
+    if (isRecord(parsed)) {
+      return {
+        ...parsed,
+        exitCode: fallback.exitCode
+      };
+    }
+  } catch {
+    // fall through to fallback
+  }
+
+  return fallback;
 }
 
 function resolveMcpCwd(baseCwd: string, args: Record<string, unknown>): string {
