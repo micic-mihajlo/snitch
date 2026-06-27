@@ -106,3 +106,28 @@ export type GraphUpdateResult = {
   graph: SnitchGraph;
   warnings: SnitchWarning[];
 };
+
+export type ReplaySnapshot = {
+  id: string;
+  title: string;
+  description: string;
+  graph: SnitchGraph;
+  warnings: SnitchWarning[];
+};
+
+export type SnitchArtifactInput = {
+  replay: ReplaySnapshot[];
+  reviewSnapshot: ReplaySnapshot;
+  createdAt: string;
+  runId: string;
+  task: string;
+};
+
+export type SnitchArtifacts = {
+  "session.json": string;
+  "graph.json": string;
+  "timeline.jsonl": string;
+  "mermaid.mmd": string;
+  "handoff.md": string;
+  "pr-comment.md": string;
+};

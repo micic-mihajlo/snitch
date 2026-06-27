@@ -95,7 +95,7 @@ Commit message: `feat: add graph core`
 - Modify: `packages/graph/src/index.ts`
 - Create: `scripts/generate-demo-artifacts.ts`
 
-- [ ] **Step 1: Write failing replay and artifact tests**
+- [x] **Step 1: Write failing replay and artifact tests**
 
 Create tests that prove:
 - replay has at least four snapshots ending with issue-tool capability graph
@@ -106,7 +106,7 @@ Create tests that prove:
 Run: `pnpm --filter @snitch/graph test -- src/replay.test.ts src/mermaid.test.ts src/artifacts.test.ts`
 Expected before implementation: fails because modules do not exist.
 
-- [ ] **Step 2: Implement replay data and artifact builders**
+- [x] **Step 2: Implement replay data and artifact builders**
 
 Add deterministic demo snapshots:
 1. baseline assistant router
@@ -123,11 +123,11 @@ Artifact builders must output:
 - `handoff.md`
 - `pr-comment.md`
 
-- [ ] **Step 3: Implement CLI artifact generation**
+- [x] **Step 3: Implement CLI artifact generation**
 
 `pnpm demo:artifacts` writes `.snitch/` files from final replay state.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 Run:
 - `pnpm --filter @snitch/graph test`
