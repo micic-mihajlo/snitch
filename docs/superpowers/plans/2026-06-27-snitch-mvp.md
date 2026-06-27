@@ -201,7 +201,7 @@ Commit message: `feat: wire sponsor integrations`
 - Create: `apps/web/src/lib/useReplay.ts`
 - Create: `apps/web/src/styles.css`
 
-- [ ] **Step 1: Write failing dashboard tests**
+- [x] **Step 1: Write failing dashboard tests**
 
 Create tests that prove:
 - the dashboard renders Snitch, replay controls, graph surface, warning rail, and sponsor lane
@@ -211,7 +211,7 @@ Create tests that prove:
 Run: `pnpm --filter @snitch/web test -- App.test.tsx`
 Expected before implementation: fails because the app does not exist.
 
-- [ ] **Step 2: Implement the dashboard**
+- [x] **Step 2: Implement the dashboard**
 
 Use `@xyflow/react` for the graph canvas.
 
@@ -225,7 +225,7 @@ UI requirements:
 - artifact preview with Mermaid and PR comment
 - sponsor lane showing Cerebras and Backboard status
 
-- [ ] **Step 3: Verify and commit**
+- [x] **Step 3: Verify and commit**
 
 Run:
 - `pnpm --filter @snitch/web test`

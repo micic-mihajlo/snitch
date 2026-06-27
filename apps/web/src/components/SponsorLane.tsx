@@ -1,0 +1,32 @@
+import { BrainCircuit, Zap } from "lucide-react";
+
+type Props = {
+  narration: string;
+  ruleCount: number;
+  cerebrasStatus: string;
+  backboardStatus: string;
+};
+
+export function SponsorLane({ narration, ruleCount, cerebrasStatus, backboardStatus }: Props) {
+  return (
+    <section className="sponsor-panel" aria-label="Sponsor integration lanes">
+      <div className="sponsor-row">
+        <Zap aria-hidden="true" />
+        <div>
+          <h2>Cerebras</h2>
+          <p>{cerebrasStatus}</p>
+        </div>
+      </div>
+      <output className="narration">{narration}</output>
+      <div className="sponsor-row">
+        <BrainCircuit aria-hidden="true" />
+        <div>
+          <h2>Backboard</h2>
+          <p>
+            {backboardStatus} / {ruleCount} repo rules
+          </p>
+        </div>
+      </div>
+    </section>
+  );
+}
