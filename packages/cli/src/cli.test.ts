@@ -215,6 +215,18 @@ describe("snitch cli", () => {
       graphSource: "typescript",
       eventCount: 1
     });
+    expect(state.events).toHaveLength(1);
+    expect(state.events[0]).toMatchObject({
+      source: "claude",
+      phase: "tool_after",
+      hook: "PostToolUse",
+      safeSummary: {
+        tool_name: "apply_patch",
+        file_path: "src/tools/create-issue.ts"
+      }
+    });
+    expect(JSON.stringify(state.events)).toContain("commandHash");
+    expect(JSON.stringify(state.events)).not.toContain("private-token-value");
     expect(state.graph.nodes.some((node) => node.label === "api.github.com API")).toBe(true);
   });
 
@@ -333,6 +345,7 @@ describe("snitch cli", () => {
     expect(state.warnings.some((warning) => warning.title === "No audit trail for external tool calls")).toBe(
       true
     );
+    expect(state.events).toEqual([]);
     expect(state.artifacts.mermaid).toContain("tool_create_issue");
     expect(state.artifacts.prComment).toContain("Snitch Review");
   });

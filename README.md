@@ -137,6 +137,8 @@ It does not store the raw hook payload. File-changing events refresh the configu
 
 The dashboard listens to `/api/events` for low-latency state updates and falls back to polling `/api/state` when EventSource is unavailable. By default, `snitch watch` also polls the configured TypeScript target and regenerates `.snitch/graph.json`, `.snitch/warnings.json`, `.snitch/mermaid.mmd`, and `.snitch/pr-comment.md` when code files change. Use `--target <repo>` to override the stored analysis target, `--scan-interval <ms>` to tune refresh speed, or `--no-files` to serve artifacts without file watching.
 
+`/api/state` includes the latest graph, warnings, publishable artifacts, integration status, and the last 50 normalized hook events. The event trace is safe for UI rendering because it contains hashes, byte counts, safe summary keys, and file evidence rather than raw payloads.
+
 The hook ingest endpoint accepts the raw hook payload body but stores only the normalized Snitch event: source, hook, payload hash, byte count, safe summary keys, and file evidence. It uses the same refresh path as `pnpm snitch event`.
 
 `pnpm demo:repair` is the stage-two demo move: it patches `apps/demo-app` with the audit log, secret redactor, scoped permission contract, and unauthorized-call test, then regenerates `.snitch` artifacts. After a live dashboard is running, this is the moment where the warning rail collapses to "No active Snitch warnings."

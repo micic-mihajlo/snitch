@@ -126,6 +126,7 @@ type LiveState = {
   session: unknown;
   graph: SnitchGraph;
   warnings: SnitchWarning[];
+  events: SnitchEvent[];
   artifacts: {
     mermaid: string;
     prComment: string;
@@ -900,6 +901,7 @@ export async function refreshWatchedTarget(
 export async function readLiveState(cwd: string): Promise<LiveState> {
   const graph = JSON.parse(await readFile(resolve(cwd, ".snitch/graph.json"), "utf8")) as SnitchGraph;
   const warnings = await readWarnings(cwd, graph);
+  const events = await readEvents(cwd);
   const sessionText = await readTextIfExists(cwd, ".snitch/session.json");
   const insightsText = await readTextIfExists(cwd, ".snitch/insights.json");
   const memoryText = await readTextIfExists(cwd, ".snitch/memory.json");
@@ -910,6 +912,7 @@ export async function readLiveState(cwd: string): Promise<LiveState> {
     session: sessionText ? JSON.parse(sessionText) : null,
     graph,
     warnings,
+    events: events.slice(-50),
     artifacts: {
       mermaid: await readTextIfExists(cwd, ".snitch/mermaid.mmd"),
       prComment: await readTextIfExists(cwd, ".snitch/pr-comment.md"),
@@ -1633,6 +1636,7 @@ function hashLiveState(state: LiveState): string {
     session: state.session,
     graph: state.graph,
     warnings: state.warnings,
+    events: state.events,
     insights: state.insights,
     memory: state.memory,
     artifacts: state.artifacts

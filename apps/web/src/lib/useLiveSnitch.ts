@@ -13,6 +13,7 @@ type LiveApiState = {
   } | null;
   graph: SnitchGraph;
   warnings: SnitchWarning[];
+  events: LiveSnitchEvent[];
   artifacts: {
     mermaid: string;
     prComment: string;
@@ -40,6 +41,17 @@ type LiveApiState = {
       rememberedWarnings: number;
     };
   };
+};
+
+type LiveSnitchEvent = {
+  id: string;
+  source: string;
+  phase: string;
+  hook: string;
+  receivedAt: string;
+  payloadHash: string;
+  payloadBytes: number;
+  safeSummary: Record<string, string | number | boolean>;
 };
 
 export type RankedWarningView = {
