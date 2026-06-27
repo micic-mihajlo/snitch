@@ -179,6 +179,26 @@ describe("snitch cli", () => {
     expect(state.artifacts.prComment).toContain("Snitch Review");
   });
 
+  it("writes offline sponsor artifacts for the live dashboard", async () => {
+    const cwd = await tempRepo();
+
+    await runCli(["analyze", "--target", demoRoot, "--task", "Wire an issue tool"], {
+      cwd,
+      now
+    });
+    const result = await runCli(["sponsors", "--offline"], {
+      cwd,
+      now: new Date("2026-06-27T12:03:00.000Z")
+    });
+    const state = await readLiveState(cwd);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("Snitch sponsor artifact written");
+    expect(state.sponsors?.cerebras.status).toBe("disabled");
+    expect(state.sponsors?.backboard.status).toBe("disabled");
+    expect(state.sponsors?.narration).toContain("Snitch saw 10 added nodes");
+  });
+
   it("finalizes PR-ready artifacts from the background session", async () => {
     const cwd = await tempRepo();
 

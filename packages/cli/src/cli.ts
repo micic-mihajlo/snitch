@@ -7,8 +7,13 @@ import { normalizeSnitchEvent, type SnitchEvent } from "@snitch/events";
 import { extractTypeScriptGraph } from "@snitch/extractor-ts";
 import {
   buildSnitchArtifacts,
+  createCerebrasNarrationInput,
+  createStaticNarration,
+  diffGraph,
   getDemoReplay,
   getReviewSnapshot,
+  loadBackboardRepoRules,
+  narrateWithCerebras,
   type ReplaySnapshot,
   type SnitchArtifacts,
   type SnitchGraph,
@@ -110,6 +115,27 @@ type LiveState = {
     handoff: string;
     timeline: string;
   };
+  sponsors?: SponsorArtifact;
+};
+
+type SponsorArtifact = {
+  generatedAt: string;
+  narration: string;
+  cerebras: {
+    status: SponsorResultStatus;
+    model?: string;
+  };
+  backboard: {
+    status: SponsorResultStatus;
+    rules: string[];
+  };
+};
+
+type SponsorResultStatus = "ok" | "disabled" | "fallback";
+
+type SponsorOptions = {
+  offline: boolean;
+  now: Date;
 };
 
 const eventsFile = ".snitch/events.jsonl";
@@ -165,6 +191,15 @@ export async function runCli(args: string[], options: RunCliOptions = {}): Promi
           "- State: /api/state",
           "- Events: /api/events"
         ].join("\n") + "\n"
+      );
+    }
+
+    if (command === "sponsors") {
+      return ok(
+        await writeSponsorArtifacts(cwd, {
+          offline: parsed.flags.has("offline"),
+          now
+        })
       );
     }
 
@@ -479,8 +514,8 @@ export async function readLiveState(cwd: string): Promise<LiveState> {
     ? (JSON.parse(warningsText) as SnitchWarning[])
     : warningsFromGraph(graph);
   const sessionText = await readTextIfExists(cwd, ".snitch/session.json");
-
-  return {
+  const sponsorsText = await readTextIfExists(cwd, ".snitch/sponsors.json");
+  const state: LiveState = {
     ok: true,
     cwd,
     generatedAt: new Date().toISOString(),
@@ -494,6 +529,12 @@ export async function readLiveState(cwd: string): Promise<LiveState> {
       timeline: await readTextIfExists(cwd, ".snitch/timeline.jsonl")
     }
   };
+
+  if (sponsorsText) {
+    state.sponsors = JSON.parse(sponsorsText) as SponsorArtifact;
+  }
+
+  return state;
 }
 
 function handleLiveEvents(cwd: string, response: ServerResponse, intervalMs: number): void {
@@ -535,6 +576,88 @@ function handleLiveEvents(cwd: string, response: ServerResponse, intervalMs: num
   });
 }
 
+async function writeSponsorArtifacts(cwd: string, options: SponsorOptions): Promise<string> {
+  const graph = JSON.parse(await readFile(resolve(cwd, ".snitch/graph.json"), "utf8")) as SnitchGraph;
+  const warningsText = await readTextIfExists(cwd, ".snitch/warnings.json");
+  const warnings = warningsText
+    ? (JSON.parse(warningsText) as SnitchWarning[])
+    : warningsFromGraph(graph);
+  const sessionText = await readTextIfExists(cwd, ".snitch/session.json");
+  const session = sessionText ? (JSON.parse(sessionText) as { task?: string }) : {};
+  const task = session.task ?? defaultTask;
+  const previousGraph: SnitchGraph = {
+    id: "sponsor-baseline",
+    title: "Sponsor baseline",
+    nodes: [],
+    edges: []
+  };
+  const diff = diffGraph(previousGraph, graph);
+  const env = options.offline ? {} : await loadRuntimeEnv(cwd);
+  const fetcher = options.offline ? undefined : createTimeoutFetcher(1600);
+  const backboardInput: Parameters<typeof loadBackboardRepoRules>[0] = { task };
+
+  if (env.BACKBOARD_API_KEY) {
+    backboardInput.apiKey = env.BACKBOARD_API_KEY;
+  }
+
+  if (env.BACKBOARD_ASSISTANT_ID) {
+    backboardInput.assistantId = env.BACKBOARD_ASSISTANT_ID;
+  }
+
+  if (fetcher) {
+    backboardInput.fetcher = fetcher;
+  }
+
+  const backboard = await loadBackboardRepoRules(backboardInput);
+  const narrationInput = createCerebrasNarrationInput({
+    task,
+    diff,
+    warnings,
+    repoRules: backboard.rules
+  });
+  const cerebrasInput: Parameters<typeof narrateWithCerebras>[0] = {
+    model: env.CEREBRAS_MODEL || "gpt-oss-120b",
+    input: narrationInput
+  };
+
+  if (env.CEREBRAS_API_KEY) {
+    cerebrasInput.apiKey = env.CEREBRAS_API_KEY;
+  }
+
+  if (fetcher) {
+    cerebrasInput.fetcher = fetcher;
+  }
+
+  const cerebras = await narrateWithCerebras(cerebrasInput);
+  const artifact: SponsorArtifact = {
+    generatedAt: options.now.toISOString(),
+    narration:
+      cerebras.status === "disabled" || cerebras.status === "fallback"
+        ? createStaticNarration(diff, warnings)
+        : cerebras.text,
+    cerebras: {
+      status: cerebras.status
+    },
+    backboard: {
+      status: backboard.status,
+      rules: backboard.rules
+    }
+  };
+
+  if (cerebras.model) {
+    artifact.cerebras.model = cerebras.model;
+  }
+
+  await writeJson(cwd, ".snitch/sponsors.json", artifact);
+
+  return [
+    "Snitch sponsor artifact written.",
+    `- Cerebras: ${artifact.cerebras.status}${artifact.cerebras.model ? ` (${artifact.cerebras.model})` : ""}`,
+    `- Backboard: ${artifact.backboard.status} / ${artifact.backboard.rules.length} rules`,
+    "- Updated: .snitch/sponsors.json"
+  ].join("\n") + "\n";
+}
+
 function sendJson(response: ServerResponse, status: number, value: unknown): void {
   writeCorsHeaders(response);
   response.writeHead(status, {
@@ -561,6 +684,44 @@ async function readTextIfExists(cwd: string, path: string): Promise<string> {
   } catch {
     return "";
   }
+}
+
+async function loadRuntimeEnv(cwd: string): Promise<Record<string, string>> {
+  const localEnvText = await readTextIfExists(cwd, ".env");
+  const localEnv = Object.fromEntries(
+    localEnvText
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith("#") && line.includes("="))
+      .map((line) => {
+        const separator = line.indexOf("=");
+        return [line.slice(0, separator), line.slice(separator + 1)];
+      })
+  );
+  const processEnv = Object.fromEntries(
+    Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === "string")
+  );
+
+  return {
+    ...localEnv,
+    ...processEnv
+  };
+}
+
+function createTimeoutFetcher(timeoutMs: number): typeof fetch {
+  return async (input, init) => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      return await fetch(input, {
+        ...init,
+        signal: init?.signal ?? controller.signal
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
 }
 
 function warningsFromGraph(graph: SnitchGraph): SnitchWarning[] {
@@ -1167,6 +1328,7 @@ function helpText(): string {
     "  snitch event [--cwd <repo>] [--source <agent>] [--hook <hook>] < stdin-json",
     "  snitch analyze [--cwd <output-repo>] [--target <ts-repo>] [--task <task>]",
     "  snitch watch [--cwd <repo>] [--port <port>] [--interval <ms>]",
+    "  snitch sponsors [--cwd <repo>] [--offline]",
     "  snitch status [--cwd <repo>]",
     "  snitch finalize [--cwd <repo>]"
   ].join("\n") + "\n";

@@ -19,6 +19,18 @@ type LiveApiState = {
     handoff: string;
     timeline: string;
   };
+  sponsors?: {
+    generatedAt: string;
+    narration: string;
+    cerebras: {
+      status: string;
+      model?: string;
+    };
+    backboard: {
+      status: string;
+      rules: string[];
+    };
+  };
 };
 
 type LiveSnitchState = {
@@ -26,6 +38,12 @@ type LiveSnitchState = {
   snapshot?: ReplaySnapshot;
   previousSnapshot?: ReplaySnapshot;
   artifacts?: SnitchArtifacts;
+  sponsorLane?: {
+    narration: string;
+    ruleCount: number;
+    cerebrasStatus: string;
+    backboardStatus: string;
+  };
   graphSourceLabel: string;
   eventCount?: number;
 };
@@ -78,6 +96,18 @@ export function useLiveSnitch(): LiveSnitchState {
             nextState.eventCount = apiState.session.eventCount;
           }
 
+          if (apiState.sponsors) {
+            nextState.sponsorLane = {
+              narration: apiState.sponsors.narration,
+              ruleCount: apiState.sponsors.backboard.rules.length,
+              cerebrasStatus: formatSponsorStatus(
+                apiState.sponsors.cerebras.status,
+                apiState.sponsors.cerebras.model
+              ),
+              backboardStatus: apiState.sponsors.backboard.status
+            };
+          }
+
           return nextState;
         });
       } catch {
@@ -104,6 +134,10 @@ export function useLiveSnitch(): LiveSnitchState {
   }, []);
 
   return liveState;
+}
+
+function formatSponsorStatus(status: string, model?: string): string {
+  return model ? `${status} · ${model}` : status;
 }
 
 function liveServerUrl(): string | undefined {

@@ -100,6 +100,18 @@ describe("Snitch dashboard", () => {
             prComment: artifacts["pr-comment.md"],
             handoff: artifacts["handoff.md"],
             timeline: artifacts["timeline.jsonl"]
+          },
+          sponsors: {
+            generatedAt: "2026-06-27T12:00:00.000Z",
+            narration: "Cerebras says the issue tool added an external API path.",
+            cerebras: {
+              status: "ok",
+              model: "glm-5.1"
+            },
+            backboard: {
+              status: "ok",
+              rules: ["External tools require audit logs.", "Secrets must be redacted."]
+            }
           }
         })
       }))
@@ -114,5 +126,8 @@ describe("Snitch dashboard", () => {
         name: /No audit trail for external tool calls/i
       })
     ).toBeInTheDocument();
+    expect(screen.getByText("ok · glm-5.1")).toBeInTheDocument();
+    expect(screen.getByText("ok / 2 repo rules")).toBeInTheDocument();
+    expect(screen.getByText(/Cerebras says the issue tool/i)).toBeInTheDocument();
   });
 });

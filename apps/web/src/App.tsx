@@ -48,6 +48,12 @@ export default function App() {
     () => createStaticNarration(diff, currentSnapshot.warnings),
     [currentSnapshot.warnings, diff]
   );
+  const sponsorLane = live.sponsorLane ?? {
+    narration,
+    ruleCount: 0,
+    cerebrasStatus: "static fallback",
+    backboardStatus: "not connected"
+  };
   const scopedGraph = useMemo(
     () => scopeGraph(currentSnapshot.graph, diff, graphScope, selectedWarning?.id),
     [currentSnapshot.graph, diff, graphScope, selectedWarning?.id]
@@ -155,10 +161,10 @@ export default function App() {
           currentSnapshotId={currentSnapshot.id}
         />
         <SponsorLane
-          narration={narration}
-          ruleCount={0}
-          cerebrasStatus="static fallback"
-          backboardStatus="not connected"
+          narration={sponsorLane.narration}
+          ruleCount={sponsorLane.ruleCount}
+          cerebrasStatus={sponsorLane.cerebrasStatus}
+          backboardStatus={sponsorLane.backboardStatus}
         />
         <ArtifactPanel artifacts={artifacts} />
       </section>
