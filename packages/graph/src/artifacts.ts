@@ -1,4 +1,5 @@
 import { diffGraph } from "./diff";
+import { buildSnitchFindings } from "./findings";
 import { graphToMermaid } from "./mermaid";
 import type {
   GraphNode,
@@ -11,6 +12,7 @@ import type {
 
 export function buildSnitchArtifacts(input: SnitchArtifactInput): SnitchArtifacts {
   const mermaid = graphToMermaid(input.reviewSnapshot.graph);
+  const findings = buildSnitchFindings(input.reviewSnapshot.graph, input.reviewSnapshot.warnings);
 
   return {
     "session.json": JSON.stringify(
@@ -26,10 +28,11 @@ export function buildSnitchArtifacts(input: SnitchArtifactInput): SnitchArtifact
     ),
     "graph.json": JSON.stringify(input.reviewSnapshot.graph, null, 2),
     "warnings.json": JSON.stringify(input.reviewSnapshot.warnings, null, 2),
+    "findings.json": JSON.stringify(findings, null, 2),
     "timeline.jsonl": buildTimelineJsonl(input.replay),
     "mermaid.mmd": mermaid,
-    "handoff.md": buildHandoff(input.reviewSnapshot, input.task),
-    "pr-comment.md": buildPrComment(input.reviewSnapshot, mermaid)
+    "handoff.md": buildHandoff(input.reviewSnapshot, input.task, findings),
+    "pr-comment.md": buildPrComment(input.reviewSnapshot, mermaid, findings)
   };
 }
 
@@ -57,7 +60,11 @@ function buildTimelineJsonl(replay: ReplaySnapshot[]): string {
     .join("\n");
 }
 
-function buildHandoff(snapshot: ReplaySnapshot, task: string): string {
+function buildHandoff(
+  snapshot: ReplaySnapshot,
+  task: string,
+  findings: ReturnType<typeof buildSnitchFindings>
+): string {
   return [
     "# Snitch Handoff",
     "",
@@ -71,11 +78,19 @@ function buildHandoff(snapshot: ReplaySnapshot, task: string): string {
     "",
     "## Active warnings",
     "",
-    ...formatWarningBullets(snapshot.warnings)
+    ...formatWarningBullets(snapshot.warnings),
+    "",
+    "## Review findings",
+    "",
+    ...formatFindingBullets(findings)
   ].join("\n");
 }
 
-function buildPrComment(snapshot: ReplaySnapshot, mermaid: string): string {
+function buildPrComment(
+  snapshot: ReplaySnapshot,
+  mermaid: string,
+  findings: ReturnType<typeof buildSnitchFindings>
+): string {
   return [
     "## Snitch Review",
     "",
@@ -91,7 +106,11 @@ function buildPrComment(snapshot: ReplaySnapshot, mermaid: string): string {
     "",
     "### Warnings",
     "",
-    ...formatWarningBullets(snapshot.warnings)
+    ...formatWarningBullets(snapshot.warnings),
+    "",
+    "### Review Findings",
+    "",
+    ...formatFindingBullets(findings)
   ].join("\n");
 }
 
@@ -174,4 +193,18 @@ function formatWarningBullets(warnings: SnitchWarning[]): string[] {
     `  - Evidence: ${warning.evidence.join("; ")}`,
     warning.repairPrompt ? `  - Repair prompt: ${warning.repairPrompt}` : ""
   ]);
+}
+
+function formatFindingBullets(findings: ReturnType<typeof buildSnitchFindings>): string[] {
+  if (findings.length === 0) {
+    return ["- No active Snitch findings."];
+  }
+
+  return findings.map((finding) => {
+    const location = finding.anchor
+      ? `${finding.anchor.file}${finding.anchor.line ? `:${finding.anchor.line}` : ""}`
+      : "unanchored";
+
+    return `- **${finding.title}** (${finding.severity}) at ${location} - ${finding.repairCommand}`;
+  });
 }

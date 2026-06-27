@@ -15,6 +15,7 @@ type LiveApiState = {
   warnings: SnitchWarning[];
   events: LiveSnitchEvent[];
   artifacts: {
+    findings?: string;
     mermaid: string;
     prComment: string;
     handoff: string;
@@ -227,6 +228,7 @@ function toArtifacts(apiState: LiveApiState): SnitchArtifacts {
     "session.json": JSON.stringify(apiState.session ?? {}, null, 2),
     "graph.json": JSON.stringify(apiState.graph, null, 2),
     "warnings.json": JSON.stringify(apiState.warnings, null, 2),
+    "findings.json": apiState.artifacts.findings ?? "[]",
     "timeline.jsonl": apiState.artifacts.timeline,
     "mermaid.mmd": apiState.artifacts.mermaid,
     "handoff.md": apiState.artifacts.handoff,

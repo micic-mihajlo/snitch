@@ -320,6 +320,31 @@ describe("snitch cli", () => {
     expect(human.stdout).toContain("src/tools/create-issue.ts");
   });
 
+  it("prints anchored review findings for active warnings", async () => {
+    const cwd = await tempRepo();
+
+    await runCli(["analyze", "--target", demoRoot, "--task", "Wire an issue tool"], { cwd, now });
+
+    const result = await runCli(["findings", "--json"], { cwd });
+    const parsed = JSON.parse(result.stdout);
+
+    expect(result.code).toBe(0);
+    expect(parsed.findings[0]).toMatchObject({
+      warningId: "warning:tool_audit_log_missing:create_issue",
+      anchor: {
+        file: "src/tools/create-issue.ts",
+        line: 9
+      }
+    });
+    expect(parsed.findings[0].repairCommand).toContain("pnpm snitch repair-prompt --warning");
+
+    const human = await runCli(["findings"], { cwd });
+
+    expect(human.stdout).toContain("Snitch findings");
+    expect(human.stdout).toContain("src/tools/create-issue.ts:9");
+    expect(human.stdout).toContain("warning:tool_audit_log_missing:create_issue");
+  });
+
   it("serves Snitch tools over the MCP JSON-RPC handler", async () => {
     const cwd = await tempRepo();
 
@@ -359,9 +384,18 @@ describe("snitch cli", () => {
         }
       }
     });
-    const impact = await handleMcpJsonRpcMessage(cwd, {
+    const findings = await handleMcpJsonRpcMessage(cwd, {
       jsonrpc: "2.0",
       id: 5,
+      method: "tools/call",
+      params: {
+        name: "snitch_findings",
+        arguments: {}
+      }
+    });
+    const impact = await handleMcpJsonRpcMessage(cwd, {
+      jsonrpc: "2.0",
+      id: 6,
       method: "tools/call",
       params: {
         name: "snitch_impact",
@@ -372,7 +406,7 @@ describe("snitch cli", () => {
     });
     const repair = await handleMcpJsonRpcMessage(cwd, {
       jsonrpc: "2.0",
-      id: 6,
+      id: 7,
       method: "tools/call",
       params: {
         name: "snitch_repair_prompt",
@@ -400,6 +434,20 @@ describe("snitch cli", () => {
         };
       };
     };
+    const findingsResult = findings as {
+      result: {
+        isError?: boolean;
+        structuredContent: {
+          findings: Array<{
+            warningId: string;
+            anchor?: {
+              file: string;
+              line?: number;
+            };
+          }>;
+        };
+      };
+    };
     const impactResult = impact as {
       result: {
         isError?: boolean;
@@ -421,6 +469,7 @@ describe("snitch cli", () => {
     expect(toolsResult.result.tools.map((tool) => tool.name)).toEqual([
       "snitch_status",
       "snitch_check",
+      "snitch_findings",
       "snitch_impact",
       "snitch_repair_prompt"
     ]);
@@ -429,6 +478,14 @@ describe("snitch cli", () => {
     expect(checkResult.result.structuredContent.failOn).toBe("medium");
     expect(checkResult.result.structuredContent.exitCode).toBe(1);
     expect(checkResult.result.structuredContent.counts.blockingWarnings).toBe(4);
+    expect(findingsResult.result.isError).toBe(false);
+    expect(findingsResult.result.structuredContent.findings[0]).toMatchObject({
+      warningId: "warning:tool_audit_log_missing:create_issue",
+      anchor: {
+        file: "src/tools/create-issue.ts",
+        line: 9
+      }
+    });
     expect(impactResult.result.isError).toBe(false);
     expect(impactResult.result.structuredContent.warning.id).toBe(
       "warning:secret_redaction_missing:create_issue"
@@ -455,6 +512,9 @@ describe("snitch cli", () => {
     );
     await expect(readFile(join(cwd, ".snitch/pr-comment.md"), "utf8")).resolves.toContain(
       "No audit trail for external tool calls"
+    );
+    await expect(readFile(join(cwd, ".snitch/findings.json"), "utf8")).resolves.toContain(
+      "src/tools/create-issue.ts"
     );
 
     const status = await runCli(["status", "--json"], { cwd });

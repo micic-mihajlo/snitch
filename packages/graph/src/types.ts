@@ -89,6 +89,23 @@ export type SnitchWarning = {
   repairPrompt?: string;
 };
 
+export type SnitchFinding = {
+  id: string;
+  warningId: string;
+  severity: WarningSeverity;
+  title: string;
+  message: string;
+  anchor?: {
+    nodeId: string;
+    label: string;
+    file: string;
+    line?: number;
+  };
+  evidence: string[];
+  relatedNodeIds: string[];
+  repairCommand: string;
+};
+
 export type GraphUpdate =
   | {
       ok: true;
@@ -128,6 +145,7 @@ export type SnitchArtifacts = {
   "session.json": string;
   "graph.json": string;
   "warnings.json": string;
+  "findings.json": string;
   "timeline.jsonl": string;
   "mermaid.mmd": string;
   "handoff.md": string;

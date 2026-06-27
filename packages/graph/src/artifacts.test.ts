@@ -16,6 +16,7 @@ describe("buildSnitchArtifacts", () => {
     });
 
     expect(Object.keys(artifacts).sort()).toEqual([
+      "findings.json",
       "graph.json",
       "handoff.md",
       "mermaid.mmd",
@@ -29,6 +30,9 @@ describe("buildSnitchArtifacts", () => {
       reviewSnapshot.graph.nodes.length
     );
     expect(JSON.parse(artifacts["warnings.json"])).toHaveLength(reviewSnapshot.warnings.length);
+    expect(JSON.parse(artifacts["findings.json"])[0]).toMatchObject({
+      warningId: "warning:tool_audit_log_missing:create_issue"
+    });
     expect(artifacts["timeline.jsonl"].split("\n")).toHaveLength(replay.length);
     expect(artifacts["mermaid.mmd"]).toContain("tool_create_issue");
     expect(artifacts["handoff.md"]).toContain("## Active warnings");
@@ -40,6 +44,8 @@ describe("buildSnitchArtifacts", () => {
     expect(artifacts["pr-comment.md"]).toContain("```mermaid");
     expect(artifacts["pr-comment.md"]).toContain("No audit trail for external tool calls");
     expect(artifacts["pr-comment.md"]).toContain("Evidence:");
+    expect(artifacts["pr-comment.md"]).toContain("### Review Findings");
+    expect(artifacts["pr-comment.md"]).toContain("warning:tool_audit_log_missing:create_issue");
   });
 
   it("summarizes the actual graph instead of hardcoded demo copy", () => {
