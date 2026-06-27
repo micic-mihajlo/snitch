@@ -287,8 +287,9 @@ describe("snitch cli", () => {
 
     expect(result.code).toBe(0);
     expect(result.stdout).toContain("Snitch background companion");
-    expect(result.stdout).toContain(".snitch/hooks/codex-hook.mjs");
-    expect(result.stdout).toContain("git rev-parse --show-toplevel");
+    expect(result.stdout).toContain("Status:");
+    expect(result.stdout).toContain("Graph:");
+    expect(result.stdout).toContain("Warnings:");
     expect(result.stdout).toContain("Analysis target: .");
   });
 
@@ -1730,6 +1731,71 @@ describe("snitch cli", () => {
     expect(calls[1]?.url).toBe("https://api.github.com/repos/acme/widgets/issues/comments/22");
     expect(calls[1]?.body).toContain("<!-- snitch-pr-summary -->");
     expect(calls[1]?.body).toContain("Snitch Review");
+  });
+
+  it("prints the version", async () => {
+    const result = await runCli(["--version"]);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toMatch(/^Snitch v\d/);
+  });
+
+  it("shows grouped help with no command", async () => {
+    const result = await runCli([]);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("Daily loop:");
+    expect(result.stdout).toContain("init");
+    expect(result.stdout).toContain("Quick start");
+  });
+
+  it("shows per-command help with --help", async () => {
+    const result = await runCli(["repair-prompt", "--help"]);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("snitch repair-prompt —");
+    expect(result.stdout).toContain("Usage:");
+    expect(result.stdout).toContain("--warning");
+  });
+
+  it("rejects an unknown command with a suggestion and nonzero exit", async () => {
+    const result = await runCli(["statuss"]);
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("Unknown command: statuss");
+    expect(result.stderr).toContain("snitch status");
+  });
+
+  it("guides the user when the repo is not initialized", async () => {
+    const cwd = await tempRepo();
+
+    const result = await runCli(["status"], { cwd });
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("isn't initialized");
+    expect(result.stderr).toContain("snitch init");
+    expect(result.stderr).not.toContain("ENOENT");
+  });
+
+  it("parses --key=value flags without corrupting the value", async () => {
+    const cwd = await tempRepo();
+
+    await runCli(["init", "--task=Build a webhook with retries"], { cwd, now });
+    const status = await runCli(["status", "--json"], { cwd });
+    const parsed = JSON.parse(status.stdout) as { session: { task: string } };
+
+    expect(parsed.session.task).toBe("Build a webhook with retries");
+  });
+
+  it("preserves the stored task across analyze instead of reverting to the default", async () => {
+    const cwd = await tempRepo();
+
+    await runCli(["init", "--target", demoRoot, "--task", "Add an external issue tool"], { cwd, now });
+    await runCli(["analyze", "--target", demoRoot], { cwd, now });
+    const status = await runCli(["status", "--json"], { cwd });
+    const parsed = JSON.parse(status.stdout) as { session: { task: string } };
+
+    expect(parsed.session.task).toBe("Add an external issue tool");
   });
 });
 

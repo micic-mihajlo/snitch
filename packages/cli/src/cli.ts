@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
@@ -32,7 +33,7 @@ import {
   type SnitchWarning,
   type IntegrationStatus,
   snitchArtifactNames
-} from "../../graph/src/index";
+} from "@snitch/graph";
 
 const execFileAsync = promisify(execFile);
 
@@ -98,6 +99,7 @@ type AnalysisWriteResult = {
   graphSource: "typescript";
   target: string;
   analyzedAt: string;
+  sourceFileCount: number;
 };
 
 type TimelineEntry = {
@@ -573,15 +575,54 @@ const hookFile = ".snitch/hooks/codex-hook.mjs";
 const defaultTask =
   "Watch this coding-agent session and expose graph changes, warnings, and PR-ready handoff artifacts.";
 
+// A user-facing error: its message is shown verbatim (no stack, no "Snitch failed:" prefix),
+// optionally followed by a hint line. Used for predictable states like "not initialized".
+class SnitchUsageError extends Error {
+  readonly hint?: string;
+
+  constructor(message: string, hint?: string) {
+    super(message);
+    this.name = "SnitchUsageError";
+    if (hint !== undefined) {
+      this.hint = hint;
+    }
+  }
+}
+
 export async function runCli(args: string[], options: RunCliOptions = {}): Promise<CliResult> {
   const parsed = parseArgs(args);
   const command = parsed.positional[0] ?? "help";
   const cwd = resolve(String(parsed.flags.get("cwd") ?? options.cwd ?? process.cwd()));
   const now = options.now ?? new Date();
 
+  // `--version` / `-v` and `--help` / `-h` are honored before any state is read, so they
+  // never crash on an uninitialized repo and a typo never silently "succeeds".
+  if (parsed.flags.has("version") || parsed.flags.has("v") || command === "version") {
+    return ok(`Snitch ${resolveVersion()}\n`);
+  }
+
+  if (command === "help" || command === "--help") {
+    const topic = parsed.positional[1];
+    return ok(topic && commandSpecByName.has(topic) ? commandHelpText(topic) : helpText());
+  }
+
+  if (parsed.flags.has("help") || parsed.flags.has("h")) {
+    return ok(commandSpecByName.has(command) ? commandHelpText(command) : helpText());
+  }
+
+  if (!commandSpecByName.has(command)) {
+    const suggestion = suggestCommand(command);
+    const hint = suggestion ? ` Did you mean \`snitch ${suggestion}\`?` : "";
+    return {
+      code: 1,
+      stdout: "",
+      stderr: `Unknown command: ${command}.${hint}\nRun \`snitch --help\` to see available commands.\n`
+    };
+  }
+
   try {
     if (command === "init") {
-      const task = String(parsed.flags.get("task") ?? defaultTask);
+      const task = await resolveSessionTask(cwd, parsed.flags);
       const agents = parseAgents(parsed.flags.get("agent"));
       const target = resolve(cwd, String(parsed.flags.get("target") ?? "."));
       const message = await initializeSnitch(cwd, task, now, agents, target);
@@ -646,14 +687,14 @@ export async function runCli(args: string[], options: RunCliOptions = {}): Promi
     }
 
     if (command === "analyze") {
-      const target = resolve(cwd, String(parsed.flags.get("target") ?? "."));
-      const task = String(parsed.flags.get("task") ?? defaultTask);
+      const target = await resolveTargetPath(cwd, parsed.flags);
+      const task = await resolveSessionTask(cwd, parsed.flags);
       return ok(await analyzeTypeScriptRepo(cwd, target, task, now));
     }
 
     if (command === "check") {
-      const target = resolve(cwd, String(parsed.flags.get("target") ?? "."));
-      const task = String(parsed.flags.get("task") ?? defaultTask);
+      const target = await resolveTargetPath(cwd, parsed.flags);
+      const task = await resolveSessionTask(cwd, parsed.flags);
       return checkTypeScriptRepo(cwd, target, task, now, parsed.flags);
     }
 
@@ -725,6 +766,15 @@ export async function runCli(args: string[], options: RunCliOptions = {}): Promi
 
     return ok(helpText());
   } catch (error) {
+    if (error instanceof SnitchUsageError) {
+      const hint = error.hint ? `\n${error.hint}` : "";
+      return {
+        code: 1,
+        stdout: "",
+        stderr: `${error.message}${hint}\n`
+      };
+    }
+
     const message = error instanceof Error ? error.message : String(error);
     return {
       code: 1,
@@ -749,16 +799,42 @@ async function analyzeTypeScriptRepo(
     runId: `snitch-analyze-${basename(target) || "repo"}`
   });
 
-  await persistAnalysisTarget(cwd, target, now, analysis.snapshot.id);
+  await persistAnalysisTarget(cwd, target, now, analysis.snapshot.id, task);
   await writeBriefingArtifacts(cwd, { task, target });
 
   return [
     `Snitch analyzed ${target}.`,
+    `- Source files: ${analysis.sourceFileCount}`,
     `- Nodes: ${analysis.snapshot.graph.nodes.length}`,
     `- Edges: ${analysis.snapshot.graph.edges.length}`,
     `- Warnings: ${analysis.snapshot.warnings.length}`,
-    updatedArtifactsLine()
+    updatedArtifactsLine(),
+    ...emptyResultDiagnostic(analysis)
   ].join("\n") + "\n";
+}
+
+// An empty graph almost always means "Snitch didn't see your code", not "your code is clean".
+// Say so explicitly with the most likely cause so a first run on a real repo isn't misread.
+function emptyResultDiagnostic(analysis: AnalysisWriteResult): string[] {
+  if (analysis.snapshot.graph.nodes.length > 0) {
+    return [];
+  }
+
+  if (analysis.sourceFileCount === 0) {
+    return [
+      "",
+      "No TypeScript source files were found under the target.",
+      "- Point Snitch at the directory that holds your code: snitch analyze --target <dir>",
+      "- Snitch scans .ts/.tsx/.mts/.cts and skips node_modules, dist, build, .next, and coverage."
+    ];
+  }
+
+  return [
+    "",
+    `Scanned ${analysis.sourceFileCount} file(s) but derived no system graph yet.`,
+    "- Snitch surfaces tools, routes, schemas, external calls, env vars, and DB access.",
+    "- A repo with none of those will be empty; this is not a clean bill of health."
+  ];
 }
 
 async function checkTypeScriptRepo(
@@ -779,7 +855,7 @@ async function checkTypeScriptRepo(
   });
   const blockingWarnings = warningsAtOrAboveThreshold(analysis.snapshot.warnings, failOn);
 
-  await persistAnalysisTarget(cwd, target, now, analysis.snapshot.id);
+  await persistAnalysisTarget(cwd, target, now, analysis.snapshot.id, task);
   await writeBriefingArtifacts(cwd, { task, target });
 
   if (flags.has("json")) {
@@ -885,7 +961,7 @@ async function readRepairVerificationPayload(
   });
   const activeWarning = analysis.snapshot.warnings.find((warning) => warning.id === warningFlag);
 
-  await persistAnalysisTarget(cwd, target, now, analysis.snapshot.id);
+  await persistAnalysisTarget(cwd, target, now, analysis.snapshot.id, task);
   await writeBriefingArtifacts(cwd, {
     task,
     target,
@@ -1222,20 +1298,38 @@ async function installGitHooks(cwd: string, flags: ParsedArgs["flags"], now: Dat
 }
 
 async function readSnitchStatus(cwd: string): Promise<string> {
-  const session = await readSession(cwd);
-  const events = await readEvents(cwd);
+  const payload = await readSnitchStatusPayload(cwd);
+  const { session, counts, warnings } = payload;
 
-  return [
-    "Snitch background companion",
+  const lines = [
+    style.bold("Snitch background companion"),
     `- Status: ${session.status}`,
     `- Task: ${session.task}`,
-    `- Events: ${events.length}`,
-    `- Current snapshot: ${session.snapshotId}`,
+    `- Events: ${counts.events}`,
+    `- Graph: ${counts.nodes} nodes, ${counts.edges} edges`,
     `- Graph source: ${session.graphSource ?? "replay"}`,
-    `- Analysis target: ${session.analysisTarget ?? "."}`,
-    `- Hook adapter: ${hookFile}`,
-    `- Configure your coding agent to run: ${createRepoRootHookCommand("<hook-name>")}`
-  ].join("\n") + "\n";
+    `- Analysis target: ${session.analysisTarget ?? "."}`
+  ];
+
+  if (counts.warnings === 0) {
+    lines.push(`- Warnings: ${style.green("none active")}`);
+  } else {
+    const summary = `${counts.warnings} active (${counts.highWarnings} high)`;
+    lines.push(
+      `- Warnings: ${counts.highWarnings > 0 ? style.red(summary) : style.yellow(summary)}`
+    );
+
+    for (const warning of warnings.slice(0, 5)) {
+      lines.push(`  - [${paintSeverity(warning.severity)}] ${warning.title}`);
+      lines.push(`    ${style.dim(`repair: snitch repair-prompt --warning ${warning.id}`)}`);
+    }
+
+    if (warnings.length > 5) {
+      lines.push(`  ${style.dim(`… and ${warnings.length - 5} more (snitch status --json)`)}`);
+    }
+  }
+
+  return lines.join("\n") + "\n";
 }
 
 async function readSnitchStatusPayload(cwd: string): Promise<SnitchStatusPayload> {
@@ -3608,6 +3702,41 @@ async function readConfigIfExists(cwd: string): Promise<SnitchConfig | undefined
   }
 }
 
+// Resolve the task for a run: an explicit --task wins, otherwise reuse the task the session
+// already stored (so analyze/check/init never silently revert it to the generic default).
+async function resolveSessionTask(cwd: string, flags: ParsedArgs["flags"]): Promise<string> {
+  const flag = flags.get("task");
+
+  if (typeof flag === "string" && flag.trim()) {
+    return flag;
+  }
+
+  const session = await readSessionIfExists(cwd);
+  return session?.task ?? defaultTask;
+}
+
+// Resolve the analysis target: an explicit --target wins, otherwise reuse the stored target
+// so `analyze`/`check` follow the directory `init` was pointed at instead of defaulting to cwd.
+async function resolveTargetPath(cwd: string, flags: ParsedArgs["flags"]): Promise<string> {
+  const flag = flags.get("target");
+
+  if (typeof flag === "string" && flag.trim()) {
+    return resolve(cwd, flag);
+  }
+
+  const session = await readSessionIfExists(cwd);
+  if (session?.analysisTarget) {
+    return resolve(cwd, session.analysisTarget);
+  }
+
+  const config = await readConfigIfExists(cwd);
+  if (config?.analysis?.target) {
+    return resolve(cwd, config.analysis.target);
+  }
+
+  return cwd;
+}
+
 function parseStructuredToolJson(
   text: string,
   fallback: Record<string, unknown>
@@ -4758,7 +4887,7 @@ async function writeTypeScriptArtifacts(
   const analyzedAt = input.now.toISOString();
   const previousGraph = input.appendTimeline ? await readGraphIfExists(cwd) : undefined;
   const previousTimeline = input.appendTimeline ? await readTextIfExists(cwd, ".snitch/timeline.jsonl") : "";
-  const extracted = extractTypeScriptGraph({
+  const extracted: ReturnType<typeof extractTypeScriptGraph> = extractTypeScriptGraph({
     cwd: input.target,
     title: `Extracted graph for ${basename(input.target) || "repo"}`,
     generatedAt: analyzedAt
@@ -4791,7 +4920,8 @@ async function writeTypeScriptArtifacts(
     snapshot: extracted.snapshot,
     graphSource: "typescript",
     target: storeTargetPath(cwd, input.target),
-    analyzedAt
+    analyzedAt,
+    sourceFileCount: extracted.sourceFileCount
   };
 }
 
@@ -4836,7 +4966,8 @@ async function persistAnalysisTarget(
   cwd: string,
   target: string,
   now: Date,
-  snapshotId: string
+  snapshotId: string,
+  task: string
 ): Promise<void> {
   const storedTarget = storeTargetPath(cwd, target);
 
@@ -4884,7 +5015,23 @@ async function persistAnalysisTarget(
     delete updatedSession.lastAnalysisError;
     await writeJson(cwd, ".snitch/session.json", updatedSession);
   } catch {
-    // `snitch analyze` can be used as a standalone artifact generator before init.
+    // `snitch analyze`/`check` can run before `init`. Seed a real session so status,
+    // briefing, and the live server have a usable session to read.
+    const session: SnitchSession = {
+      ...createSession({
+        runId: `snitch-analyze-${basename(target) || "repo"}`,
+        task,
+        status: "initialized",
+        startedAt: now.toISOString(),
+        lastEventAt: now.toISOString(),
+        eventCount: 0,
+        snapshotId,
+        graphSource: "typescript",
+        analysisTarget: storedTarget
+      }),
+      lastAnalyzedAt: now.toISOString()
+    };
+    await writeJson(cwd, ".snitch/session.json", session);
   }
 }
 
@@ -4927,8 +5074,14 @@ async function writeReplayArtifacts(
 }
 
 async function writeArtifacts(cwd: string, artifacts: SnitchArtifacts): Promise<void> {
+  // `session.json` is the CLI-owned live session (task, status, event count). The artifact
+  // builder emits a minimal demo-shaped session for standalone exports, but writing it here
+  // would clobber the real session on every analyze/check/refresh. The session lifecycle
+  // (init / event / persistAnalysisTarget / finalize) owns that file instead.
   await Promise.all(
-    snitchArtifactNames.map((name) => writeText(cwd, artifactPath(name), artifacts[name]))
+    snitchArtifactNames
+      .filter((name) => name !== "session.json")
+      .map((name) => writeText(cwd, artifactPath(name), artifacts[name]))
   );
 }
 
@@ -4960,13 +5113,17 @@ function createSession(input: {
 }
 
 function createCodexHookAdapter(): string {
-  const snitchRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+  const { snitchRoot, distEntry } = resolveSnitchRunnerPaths();
 
   return `#!/usr/bin/env node
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 
-const input = readFileSync(0, "utf8");
+// Baked at \`snitch init\` time so this adapter keeps working without a global install.
+const DIST_ENTRY = ${JSON.stringify(distEntry)};
+const SNITCH_ROOT = ${JSON.stringify(snitchRoot)};
+
+const input = readStdinSafely();
 const hook = process.env.SNITCH_HOOK_NAME || process.env.CODEX_HOOK_NAME || process.argv[2] || "agent-event";
 const source = process.env.SNITCH_SOURCE || "codex";
 const ingestUrl = process.env.SNITCH_INGEST_URL || "http://127.0.0.1:4767/api/events";
@@ -4980,17 +5137,46 @@ if (liveResult.ok) {
   process.exit(0);
 }
 
-const result = spawnSync(
-  "pnpm",
-  ["--dir", ${JSON.stringify(snitchRoot)}, "snitch", "event", "--cwd", repoRoot, "--source", source, "--hook", hook],
-  {
-    input,
-    encoding: "utf8",
-    stdio: ["pipe", "inherit", "inherit"]
-  }
-);
+process.exit(runSnitchEvent(["event", "--cwd", repoRoot, "--source", source, "--hook", hook], input));
 
-process.exit(result.status ?? 1);
+// Resolve the snitch CLI without assuming where it lives:
+//   1. a global \`snitch\` on PATH (recommended daily setup)
+//   2. the built bundle baked in at init time (works from any repo, no global install)
+//   3. \`pnpm --dir <snitch-checkout>\` as a last-resort dev fallback
+function runSnitchEvent(args, stdin) {
+  const options = { input: stdin, encoding: "utf8", stdio: ["pipe", "inherit", "inherit"] };
+
+  const direct = spawnSync("snitch", args, options);
+  if (!isMissingBinary(direct)) {
+    return direct.status ?? 1;
+  }
+
+  if (DIST_ENTRY && existsSync(DIST_ENTRY)) {
+    const bundled = spawnSync(process.execPath, [DIST_ENTRY, ...args], options);
+    if (!isMissingBinary(bundled)) {
+      return bundled.status ?? 1;
+    }
+  }
+
+  const dev = spawnSync("pnpm", ["--dir", SNITCH_ROOT, "snitch", ...args], options);
+  return dev.status ?? 1;
+}
+
+function isMissingBinary(result) {
+  return Boolean(result.error && result.error.code === "ENOENT");
+}
+
+function readStdinSafely() {
+  if (process.stdin.isTTY) {
+    return "";
+  }
+
+  try {
+    return readFileSync(0, "utf8");
+  } catch {
+    return "";
+  }
+}
 
 async function postToLiveServer(url, sourceName, hookName, body) {
   if (process.env.SNITCH_DISABLE_HTTP === "1") {
@@ -5209,7 +5395,8 @@ async function resolveGitHooksDir(cwd: string): Promise<string> {
 }
 
 function createGitHookScript(hookName: GitHookName): string {
-  const snitchRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+  const { snitchRoot, distEntry } = resolveSnitchRunnerPaths();
+  const eventArgs = `event --cwd "$repo_root" --source git --hook "file_changed:${hookName}"`;
 
   return `#!/usr/bin/env sh
 # snitch-managed:${hookName}
@@ -5218,10 +5405,27 @@ set -eu
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 payload='{"hook":"${hookName}","event":"git_${hookName.replaceAll("-", "_")}"}'
 
-if command -v pnpm >/dev/null 2>&1; then
-  printf '%s' "$payload" | pnpm --dir ${shellQuote(snitchRoot)} snitch event --cwd "$repo_root" --source git --hook "file_changed:${hookName}" >/dev/null 2>&1 || true
+if command -v snitch >/dev/null 2>&1; then
+  printf '%s' "$payload" | snitch ${eventArgs} >/dev/null 2>&1 || true
+elif [ -f ${shellQuote(distEntry)} ]; then
+  printf '%s' "$payload" | node ${shellQuote(distEntry)} ${eventArgs} >/dev/null 2>&1 || true
+elif command -v pnpm >/dev/null 2>&1; then
+  printf '%s' "$payload" | pnpm --dir ${shellQuote(snitchRoot)} snitch ${eventArgs} >/dev/null 2>&1 || true
 fi
 `;
+}
+
+// Both the hook adapter and Git hooks need to relocate the snitch CLI. The bundled binary
+// lives at <repo>/packages/cli/dist/main.js; in tsx dev mode that file may not exist yet,
+// so callers also keep the checkout root for a `pnpm --dir` fallback.
+function resolveSnitchRunnerPaths(): { snitchRoot: string; distEntry: string } {
+  const moduleDir = dirname(fileURLToPath(import.meta.url));
+  const snitchRoot = resolve(moduleDir, "../../..");
+
+  return {
+    snitchRoot,
+    distEntry: resolve(snitchRoot, "packages/cli/dist/main.js")
+  };
 }
 
 function shellQuote(value: string): string {
@@ -5296,8 +5500,24 @@ function resolveStoredTarget(cwd: string, target: string): string {
   return isAbsolute(target) ? target : resolve(cwd, target);
 }
 
+// Reads a required .snitch state file, turning a missing file into a friendly
+// "not initialized here" message instead of a raw ENOENT with an absolute path.
+async function readSnitchStateFile(cwd: string, path: string): Promise<string> {
+  try {
+    return await readFile(resolve(cwd, path), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new SnitchUsageError(
+        "Snitch isn't initialized in this directory.",
+        'Run `snitch init --task "<what the agent should build>"` to get started.'
+      );
+    }
+    throw error;
+  }
+}
+
 async function readConfig(cwd: string): Promise<SnitchConfig> {
-  const contents = await readFile(resolve(cwd, ".snitch/config.json"), "utf8");
+  const contents = await readSnitchStateFile(cwd, ".snitch/config.json");
   const parsed = JSON.parse(contents) as SnitchConfig;
 
   if (!parsed.analysis) {
@@ -5315,7 +5535,7 @@ async function readConfig(cwd: string): Promise<SnitchConfig> {
 }
 
 async function readSession(cwd: string): Promise<SnitchSession> {
-  const contents = await readFile(resolve(cwd, ".snitch/session.json"), "utf8");
+  const contents = await readSnitchStateFile(cwd, ".snitch/session.json");
   const parsed = JSON.parse(contents) as Partial<SnitchSession> & {
     createdAt?: string;
     reviewSnapshotId?: string;
@@ -5422,17 +5642,45 @@ function parseArgs(args: string[]): ParsedArgs {
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
 
-    if (arg?.startsWith("--")) {
-      const name = arg.slice(2);
+    if (arg === undefined) {
+      continue;
+    }
+
+    // Everything after a bare `--` is positional, so tasks/paths can contain dashes.
+    if (arg === "--") {
+      for (let rest = index + 1; rest < args.length; rest += 1) {
+        const value = args[rest];
+        if (value) {
+          positional.push(value);
+        }
+      }
+      break;
+    }
+
+    if (arg.startsWith("--")) {
+      const body = arg.slice(2);
+      const equals = body.indexOf("=");
+
+      // `--key=value` keeps the value intact even when it starts with a dash.
+      if (equals !== -1) {
+        flags.set(body.slice(0, equals), body.slice(equals + 1));
+        continue;
+      }
+
       const next = args[index + 1];
 
-      if (next && !next.startsWith("--")) {
-        flags.set(name, next);
+      // Consume the next token as the value unless it's clearly another `--flag`.
+      // A single-dash value (e.g. a task that starts with "-") is still captured.
+      if (next !== undefined && !next.startsWith("--")) {
+        flags.set(body, next);
         index += 1;
       } else {
-        flags.set(name, true);
+        flags.set(body, true);
       }
-    } else if (arg) {
+    } else if (arg.startsWith("-") && arg.length > 1) {
+      // Short boolean flags such as `-h`.
+      flags.set(arg.slice(1), true);
+    } else {
       positional.push(arg);
     }
   }
@@ -5503,22 +5751,318 @@ function ok(stdout: string): CliResult {
   };
 }
 
+// Color is opt-out: only when writing to a TTY and NO_COLOR is unset. In tests, pipes, and
+// `--json` output stdout is not a TTY, so these helpers are no-ops and output stays plain.
+function colorEnabled(): boolean {
+  return Boolean(process.stdout.isTTY) && process.env.NO_COLOR === undefined && process.env.TERM !== "dumb";
+}
+
+function paint(value: string, code: string): string {
+  return colorEnabled() ? `[${code}m${value}[0m` : value;
+}
+
+const style = {
+  bold: (value: string): string => paint(value, "1"),
+  dim: (value: string): string => paint(value, "2"),
+  red: (value: string): string => paint(value, "31"),
+  green: (value: string): string => paint(value, "32"),
+  yellow: (value: string): string => paint(value, "33"),
+  cyan: (value: string): string => paint(value, "36")
+};
+
+function paintSeverity(severity: SnitchWarning["severity"]): string {
+  if (severity === "high") {
+    return style.red(severity);
+  }
+  if (severity === "medium") {
+    return style.yellow(severity);
+  }
+  if (severity === "low") {
+    return style.cyan(severity);
+  }
+  return style.dim(severity);
+}
+
+type CommandGroup = "daily" | "evidence" | "runtime" | "publish";
+
+type CommandSpec = {
+  name: string;
+  group: CommandGroup;
+  summary: string;
+  usage: string;
+  flags?: Array<[string, string]>;
+  examples?: string[];
+};
+
+const commonFlags: Array<[string, string]> = [
+  ["--cwd <dir>", "Run against another repo root (defaults to the current directory)"],
+  ["--json", "Emit machine-readable JSON instead of text"]
+];
+
+const commandSpecs: CommandSpec[] = [
+  {
+    name: "init",
+    group: "daily",
+    summary: "Set up Snitch in this repo: .snitch/ state, hook adapter, and agent configs.",
+    usage: "snitch init [--agent codex|cursor|claude|opencode|all] [--target <dir>] [--task \"<task>\"]",
+    flags: [
+      ["--agent <a[,b]>", "Coding agents to wire up (or `all`). Default: codex"],
+      ["--target <dir>", "Directory to analyze. Default: ."],
+      ["--task \"<task>\"", "What the agent is being asked to build (drives intent checks)"]
+    ],
+    examples: ["snitch init --agent claude --task \"Add an issue-creation tool\""]
+  },
+  {
+    name: "watch",
+    group: "daily",
+    summary: "Serve the live dashboard data and refresh the graph as files change.",
+    usage: "snitch watch [--target <dir>] [--port <n>] [--insights] [--no-files]",
+    flags: [
+      ["--target <dir>", "Directory to analyze (defaults to the stored target)"],
+      ["--port <n>", "HTTP port for the live server. Default: 4767"],
+      ["--insights", "Refresh Cerebras/Backboard insight artifacts after graph refreshes"],
+      ["--scan-interval <ms>", "File scan interval. Default: 600"],
+      ["--no-files", "Serve artifacts without watching files"]
+    ],
+    examples: ["snitch watch --insights"]
+  },
+  {
+    name: "briefing",
+    group: "daily",
+    summary: "One-shot agent context: status, intent coverage, top action, changed surface.",
+    usage: "snitch briefing [--task \"<task>\"] [--json]",
+    flags: [["--task \"<task>\"", "Override the stored task"], ...commonFlags.slice(1)]
+  },
+  {
+    name: "check",
+    group: "daily",
+    summary: "Enforcement gate: exit nonzero when warnings meet a severity threshold.",
+    usage: "snitch check [--target <dir>] [--task \"<task>\"] [--fail-on high|medium|low] [--json]",
+    flags: [["--fail-on <sev>", "Severity that fails the check. Default: high"], ...commonFlags],
+    examples: ["snitch check --fail-on medium"]
+  },
+  {
+    name: "repair-prompt",
+    group: "daily",
+    summary: "Print a paste-ready fix prompt for an active warning.",
+    usage: "snitch repair-prompt [--warning <id|index>] [--all]",
+    flags: [
+      ["--warning <id>", "Warning id or 1-based index (defaults to highest severity)"],
+      ["--all", "Print a prompt for every active warning"]
+    ]
+  },
+  {
+    name: "verify-repair",
+    group: "daily",
+    summary: "Re-run analysis and confirm a specific warning is gone (exit 0) or not (exit 1).",
+    usage: "snitch verify-repair --warning <id> [--target <dir>] [--task \"<task>\"] [--json]",
+    flags: [["--warning <id>", "Warning id to verify"], ...commonFlags]
+  },
+  {
+    name: "status",
+    group: "evidence",
+    summary: "Show session state, counts, and active warnings.",
+    usage: "snitch status [--json]",
+    flags: [commonFlags[1]!]
+  },
+  {
+    name: "doctor",
+    group: "evidence",
+    summary: "Verify hook wiring, agent configs, artifacts, Git hooks, and providers.",
+    usage: "snitch doctor [--json]",
+    flags: [commonFlags[1]!]
+  },
+  {
+    name: "verify-intent",
+    group: "evidence",
+    summary: "Check whether the graph proves the task the agent claims to have completed.",
+    usage: "snitch verify-intent [--task \"<task>\"] [--json]"
+  },
+  {
+    name: "changed",
+    group: "evidence",
+    summary: "Focus active findings on the local Git changed files.",
+    usage: "snitch changed [--target <dir>] [--json]"
+  },
+  {
+    name: "findings",
+    group: "evidence",
+    summary: "Map active warnings to file/line evidence and repair commands.",
+    usage: "snitch findings [--json]"
+  },
+  {
+    name: "impact",
+    group: "evidence",
+    summary: "Print the affected node/edge neighborhood around a warning.",
+    usage: "snitch impact [--warning <id>] [--json]"
+  },
+  {
+    name: "trace",
+    group: "evidence",
+    summary: "Connect a warning to its finding, related hook events, and timeline entries.",
+    usage: "snitch trace [--warning <id>] [--json]"
+  },
+  {
+    name: "next-action",
+    group: "evidence",
+    summary: "The single highest-priority grounded follow-up after hook capture.",
+    usage: "snitch next-action [--json]"
+  },
+  {
+    name: "analyze",
+    group: "runtime",
+    summary: "One-shot graph extraction; persists the target for later refreshes.",
+    usage: "snitch analyze [--target <dir>] [--task \"<task>\"]"
+  },
+  {
+    name: "insights",
+    group: "runtime",
+    summary: "Write Cerebras narration/ranking and Backboard repo-rule artifacts.",
+    usage: "snitch insights [--offline]"
+  },
+  {
+    name: "event",
+    group: "runtime",
+    summary: "Record a hook event from stdin (used by the generated hook adapter).",
+    usage: "snitch event [--source <agent>] [--hook <name>]"
+  },
+  {
+    name: "mcp",
+    group: "runtime",
+    summary: "Start the MCP stdio server exposing Snitch tools to MCP-capable agents.",
+    usage: "snitch mcp"
+  },
+  {
+    name: "finalize",
+    group: "runtime",
+    summary: "Write the handoff summary and warning-decision memory.",
+    usage: "snitch finalize"
+  },
+  {
+    name: "install-git-hooks",
+    group: "runtime",
+    summary: "Install Snitch-managed post-commit and pre-push hooks (no GitHub writes).",
+    usage: "snitch install-git-hooks [--force]"
+  },
+  {
+    name: "publish-github",
+    group: "publish",
+    summary: "Create or update one top-level GitHub PR comment from .snitch/pr-comment.md.",
+    usage: "snitch publish-github [--repo owner/name] [--pr <n>]"
+  }
+];
+
+const commandSpecByName = new Map(commandSpecs.map((spec) => [spec.name, spec]));
+
+function knownCommands(): string[] {
+  return commandSpecs.map((spec) => spec.name);
+}
+
 function helpText(): string {
-  return [
-    "Snitch background companion",
+  const groups: Array<[CommandGroup, string]> = [
+    ["daily", "Daily loop"],
+    ["evidence", "Evidence & inspection"],
+    ["runtime", "Agent runtime"],
+    ["publish", "Publish"]
+  ];
+
+  const lines = [
+    `Snitch ${resolveVersion()} — live verification layer for AI coding agents`,
     "",
-    "Daily path:",
-    "  snitch init --agent codex --target . --task \"<task>\"",
-    "  snitch watch --target .",
-    "  snitch briefing --task \"<task>\"",
-    "  snitch check --target . --task \"<task>\" --fail-on medium",
+    "Usage: snitch <command> [options]",
+    ""
+  ];
+
+  for (const [group, heading] of groups) {
+    lines.push(`${heading}:`);
+    for (const spec of commandSpecs.filter((entry) => entry.group === group)) {
+      lines.push(`  ${spec.name.padEnd(18)}${spec.summary}`);
+    }
+    lines.push("");
+  }
+
+  lines.push(
+    "Quick start (in any repo):",
+    '  snitch init --agent claude --task "<what the agent should build>"',
+    "  snitch watch --insights        # then open the dashboard",
+    '  snitch briefing                # context for the agent at any point',
+    "  snitch check --fail-on medium  # gate before handoff",
     "",
-    "When Snitch reports a warning:",
-    "  snitch repair-prompt --warning <id>",
-    "  snitch verify-repair --warning <id> --target . --task \"<task>\"",
-    "",
-    "Agent/runtime commands: event, mcp, doctor, status, changed, trace, impact, findings, next-action, insights, finalize, install-git-hooks, publish-github."
-  ].join("\n") + "\n";
+    "Run `snitch <command> --help` for command-specific options.",
+    "Run `snitch --version` to print the version."
+  );
+
+  return lines.join("\n") + "\n";
+}
+
+function commandHelpText(name: string): string {
+  const spec = commandSpecByName.get(name);
+
+  if (!spec) {
+    return helpText();
+  }
+
+  const lines = [`snitch ${spec.name} — ${spec.summary}`, "", `Usage: ${spec.usage}`];
+
+  if (spec.flags && spec.flags.length > 0) {
+    lines.push("", "Options:");
+    for (const [flag, description] of spec.flags) {
+      lines.push(`  ${flag.padEnd(22)}${description}`);
+    }
+  }
+
+  if (spec.examples && spec.examples.length > 0) {
+    lines.push("", "Examples:");
+    for (const example of spec.examples) {
+      lines.push(`  ${example}`);
+    }
+  }
+
+  return lines.join("\n") + "\n";
+}
+
+function resolveVersion(): string {
+  try {
+    const packageJsonPath = fileURLToPath(new URL("../package.json", import.meta.url));
+    const parsed = JSON.parse(readFileSync(packageJsonPath, "utf8")) as { version?: string };
+    return parsed.version ? `v${parsed.version}` : "v0.1.0";
+  } catch {
+    return "v0.1.0";
+  }
+}
+
+function suggestCommand(input: string): string | undefined {
+  let best: { name: string; distance: number } | undefined;
+
+  for (const name of knownCommands()) {
+    const distance = levenshtein(input, name);
+    if (!best || distance < best.distance) {
+      best = { name, distance };
+    }
+  }
+
+  return best && best.distance <= 3 ? best.name : undefined;
+}
+
+function levenshtein(a: string, b: string): number {
+  const rows = Array.from({ length: a.length + 1 }, (_, index) => [index, ...new Array<number>(b.length).fill(0)]);
+
+  for (let column = 0; column <= b.length; column += 1) {
+    rows[0]![column] = column;
+  }
+
+  for (let row = 1; row <= a.length; row += 1) {
+    for (let column = 1; column <= b.length; column += 1) {
+      const cost = a[row - 1] === b[column - 1] ? 0 : 1;
+      rows[row]![column] = Math.min(
+        rows[row - 1]![column]! + 1,
+        rows[row]![column - 1]! + 1,
+        rows[row - 1]![column - 1]! + cost
+      );
+    }
+  }
+
+  return rows[a.length]![b.length]!;
 }
 
 function createRunId(now: Date): string {
