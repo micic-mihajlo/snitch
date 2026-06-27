@@ -11,7 +11,7 @@ This repo now includes a working first slice:
 - background CLI: `pnpm snitch init`, `event`, `status`, and `finalize`
 - generated hook adapter at `.snitch/hooks/codex-hook.mjs`
 - generated Codex, Cursor, Claude Code, and OpenCode adapter configs with `--agent all`
-- MCP stdio server: `pnpm --silent snitch mcp` exposes status, doctor, verify-intent, verify-repair, check, findings, next-action, trace, changed, impact, and repair-prompt tools to MCP-capable agents
+- MCP stdio server: `pnpm --silent snitch mcp` exposes status, doctor, briefing, verify-intent, verify-repair, check, findings, next-action, trace, changed, impact, and repair-prompt tools to MCP-capable agents
 - setup doctor: `pnpm snitch doctor` verifies hook wiring, generated agent configs, graph artifacts, Git hooks, and optional provider readiness
 - intent coverage: `pnpm snitch verify-intent` checks whether the graph proves the task the agent claims to have completed
 - local Git hook installer: `pnpm snitch install-git-hooks`
@@ -29,6 +29,7 @@ This repo now includes a working first slice:
 - graph scope controls for all, changed, and selected-warning impact views
 - insights artifact: `pnpm snitch insights` writes Cerebras narration, warning ranking, repair prompts, and Backboard repo-rule status
 - agent intervention packet: `pnpm snitch next-action` tells the coding agent the current grounded follow-up after hook capture
+- agent briefing packet: `pnpm snitch briefing` combines status, intent coverage, changed-surface findings, top action, impact, integrations, and next commands for agent handoff
 - warning provenance: `pnpm snitch trace` connects a warning to anchored findings, safe hook events, and graph timeline entries
 - changed-surface review: `pnpm snitch changed` focuses active findings on the local Git changed files before handoff
 - paste-ready repair prompt: `pnpm snitch repair-prompt` prints the next agent fix from active warnings
@@ -71,6 +72,8 @@ pnpm snitch insights --offline
 pnpm snitch insights
 pnpm snitch doctor
 pnpm snitch doctor --json
+pnpm snitch briefing
+pnpm snitch briefing --task "Add an external issue-creation tool" --json
 pnpm snitch verify-intent --task "Add an external issue-creation tool"
 pnpm snitch verify-intent --task "Add an external issue-creation tool" --json
 pnpm snitch verify-repair --warning warning:tool_audit_log_missing:create_issue
@@ -153,6 +156,8 @@ It does not store the raw hook payload. File-changing events refresh the configu
 
 `snitch doctor` is the setup/readiness path for coding agents. It checks local session state, `.snitch/config.json`, the analysis target, generated hook adapter, Codex/Cursor/Claude Code/OpenCode configs, safe event log, graph artifacts, local Git hooks, optional provider env presence, and MCP availability. Use `--json` when an agent needs structured readiness checks before deciding whether to trust Snitch output.
 
+`snitch briefing` is the coding-agent context packet. It composes the current session status, task intent coverage, local changed-surface findings, top repair action, warning impact neighborhood, provider/memory status, and next commands into one CLI/MCP response. Use it at the start of an agent turn, before handoff, or before PR publication when the agent needs a compact view of what changed and what still needs proof.
+
 `snitch verify-intent` is the task-coverage path. It maps task text to a deterministic capability profile, then checks the current graph for required surfaces such as tools, schemas, provider calls, secrets, audit logging, redaction, permission contracts, and tests. Use `--task "<task>"` to override the stored session task and `--json` for agent automation.
 
 `snitch trace` is the warning provenance path. It connects an active warning to its anchored finding, likely related safe hook events, impacted graph neighborhood, and recent graph timeline entries. Use `--json` when a coding agent needs structured evidence before repairing a warning.
@@ -167,7 +172,7 @@ It does not store the raw hook payload. File-changing events refresh the configu
 
 `snitch impact` is the local impact lens for agents and reviewers. It scopes the graph around a warning, prints the affected files, nodes, edges, and repair command, and supports `--json` so coding agents can consume it directly. Without `--warning`, it uses the highest-severity active warning.
 
-`snitch mcp` starts a newline-delimited JSON-RPC MCP stdio server for MCP-capable coding environments. It exposes `snitch_status`, `snitch_doctor`, `snitch_verify_intent`, `snitch_verify_repair`, `snitch_check`, `snitch_findings`, `snitch_next_action`, `snitch_trace`, `snitch_changed`, `snitch_impact`, and `snitch_repair_prompt`, each backed by the same local `.snitch` artifacts as the CLI. The server writes only MCP messages to stdout; when launching through this repo's package script, use `pnpm --silent snitch mcp` so the package runner does not print its command first.
+`snitch mcp` starts a newline-delimited JSON-RPC MCP stdio server for MCP-capable coding environments. It exposes `snitch_status`, `snitch_doctor`, `snitch_briefing`, `snitch_verify_intent`, `snitch_verify_repair`, `snitch_check`, `snitch_findings`, `snitch_next_action`, `snitch_trace`, `snitch_changed`, `snitch_impact`, and `snitch_repair_prompt`, each backed by the same local `.snitch` artifacts as the CLI. The server writes only MCP messages to stdout; when launching through this repo's package script, use `pnpm --silent snitch mcp` so the package runner does not print its command first.
 
 `snitch check` is the enforcement path. It runs the TypeScript extractor, updates `.snitch` artifacts, and exits with code `1` when warnings meet or exceed `--fail-on` (`high` by default). Use `--json` for CI consumers and follow failures with `pnpm snitch repair-prompt --warning <id>`.
 
