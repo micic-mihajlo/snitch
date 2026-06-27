@@ -1960,6 +1960,12 @@ import { spawnSync } from "node:child_process";
 const input = readFileSync(0, "utf8");
 const hook = process.env.SNITCH_HOOK_NAME || process.env.CODEX_HOOK_NAME || process.argv[2] || "agent-event";
 const source = process.env.SNITCH_SOURCE || "codex";
+const ingestUrl = process.env.SNITCH_INGEST_URL || "http://127.0.0.1:4767/api/events";
+
+if (await postToLiveServer(ingestUrl, source, hook, input)) {
+  process.exit(0);
+}
+
 const result = spawnSync(
   "pnpm",
   ["--dir", ${JSON.stringify(snitchRoot)}, "snitch", "event", "--cwd", process.cwd(), "--source", source, "--hook", hook],
@@ -1971,6 +1977,35 @@ const result = spawnSync(
 );
 
 process.exit(result.status ?? 1);
+
+async function postToLiveServer(url, sourceName, hookName, body) {
+  if (process.env.SNITCH_DISABLE_HTTP === "1") {
+    return false;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Number(process.env.SNITCH_HTTP_TIMEOUT_MS || 350));
+
+  try {
+    const target = new URL(url);
+    target.searchParams.set("source", sourceName);
+    target.searchParams.set("hook", hookName);
+    const response = await fetch(target, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body,
+      signal: controller.signal
+    });
+
+    return response.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 `;
 }
 

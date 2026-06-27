@@ -100,6 +100,8 @@ The generated hook command is:
 node .snitch/hooks/codex-hook.mjs <hook-name>
 ```
 
+When `snitch watch` is running, the generated adapter first tries to POST into the live server at `SNITCH_INGEST_URL` or `http://127.0.0.1:4767/api/events`. If the server is unavailable, it falls back to `pnpm snitch event`. Set `SNITCH_DISABLE_HTTP=1` to force CLI-only capture.
+
 The generated adapter calls back into this Snitch checkout and records:
 
 - source and hook name

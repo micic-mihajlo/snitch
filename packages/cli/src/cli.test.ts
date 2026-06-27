@@ -32,6 +32,12 @@ describe("snitch cli", () => {
     await expect(readFile(join(cwd, ".snitch/hooks/codex-hook.mjs"), "utf8")).resolves.toContain(
       "pnpm"
     );
+    await expect(readFile(join(cwd, ".snitch/hooks/codex-hook.mjs"), "utf8")).resolves.toContain(
+      "SNITCH_INGEST_URL"
+    );
+    await expect(readFile(join(cwd, ".snitch/hooks/codex-hook.mjs"), "utf8")).resolves.toContain(
+      "postToLiveServer"
+    );
 
     const hookStats = await stat(join(cwd, ".snitch/hooks/codex-hook.mjs"));
     expect(hookStats.mode & 0o111).toBeGreaterThan(0);
