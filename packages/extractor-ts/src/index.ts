@@ -201,22 +201,159 @@ function extractToolSurface(cwd: string, sourceFile: SourceFile, graph: MutableG
 
     if ((toolName && looksLikeToolObject(variable, objectLiteral)) || variable.getName() === "createIssueTool") {
       const canonicalToolName = toolName ?? "create_issue";
-      const toolId = toolIdForName(canonicalToolName);
-      addNode(graph, {
-        id: toolId,
-        kind: "tool",
-        label: toolLabel(canonicalToolName),
+      addToolNode(graph, {
+        name: canonicalToolName,
         file,
         line: variable.getStartLineNumber(),
-        meta: {
-          endLine: variable.getEndLineNumber(),
-          symbol: variable.getName(),
-          capability: inferToolCapability(canonicalToolName),
-          inputSchemaSymbol: objectLiteral ? getExpressionPropertyText(objectLiteral, "inputSchema") : undefined
-        }
+        endLine: variable.getEndLineNumber(),
+        symbol: variable.getName(),
+        inputSchemaSymbol: objectLiteral ? getExpressionPropertyText(objectLiteral, "inputSchema") : undefined
       });
     }
+
+    const toolCall = variable.getInitializerIfKind(SyntaxKind.CallExpression);
+
+    if (toolCall && looksLikeToolRegistrationCall(toolCall)) {
+      addToolNodeFromCall(graph, file, toolCall, variable.getName());
+    }
   }
+
+  for (const call of sourceFile.getDescendantsOfKind(SyntaxKind.CallExpression)) {
+    if (isVariableInitializer(call) || !looksLikeToolRegistrationCall(call)) {
+      continue;
+    }
+
+    addToolNodeFromCall(graph, file, call);
+  }
+}
+
+function addToolNodeFromCall(
+  graph: MutableGraph,
+  file: string,
+  call: CallExpression,
+  fallbackSymbol?: string
+): void {
+  const name = toolNameFromRegistrationCall(call, fallbackSymbol);
+  const schema = getToolCallSchema(call, name);
+  const toolId = toolIdForName(name);
+
+  addToolNode(graph, {
+    name,
+    file,
+    line: call.getStartLineNumber(),
+    endLine: call.getEndLineNumber(),
+    symbol: fallbackSymbol,
+    inputSchemaSymbol: schema.inputSchemaSymbol
+  });
+
+  if (schema.inlineFields.length === 0) {
+    return;
+  }
+
+  const schemaId = schemaIdForName(`${name}_input`);
+  addNode(graph, {
+    id: schemaId,
+    kind: "schema",
+    label: `${toolLabel(name)} input schema`,
+    file,
+    line: schema.line ?? call.getStartLineNumber(),
+    meta: {
+      fields: schema.inlineFields,
+      source: "inline-tool-schema"
+    }
+  });
+  addEdgeIfMissing(
+    graph,
+    `edge:${edgeIdPart(toolId)}-validates-${edgeIdPart(schemaId)}`,
+    toolId,
+    schemaId,
+    "validates"
+  );
+}
+
+function addToolNode(
+  graph: MutableGraph,
+  input: {
+    name: string;
+    file: string;
+    line: number;
+    endLine: number;
+    symbol?: string | undefined;
+    inputSchemaSymbol?: string | undefined;
+  }
+): void {
+  addNode(graph, {
+    id: toolIdForName(input.name),
+    kind: "tool",
+    label: toolLabel(input.name),
+    file: input.file,
+    line: input.line,
+    meta: {
+      endLine: input.endLine,
+      symbol: input.symbol,
+      capability: inferToolCapability(input.name),
+      inputSchemaSymbol: input.inputSchemaSymbol
+    }
+  });
+}
+
+function getToolCallSchema(call: CallExpression, toolName: string): {
+  inputSchemaSymbol?: string | undefined;
+  inlineFields: string[];
+  line?: number | undefined;
+} {
+  for (const argument of call.getArguments()) {
+    if (!Node.isObjectLiteralExpression(argument)) {
+      continue;
+    }
+
+    const inputSchema = argument.getProperty("inputSchema");
+
+    if (inputSchema && Node.isPropertyAssignment(inputSchema)) {
+      const initializer = inputSchema.getInitializer();
+      const inlineFields = extractSchemaFieldsFromExpression(initializer);
+
+      return {
+        inputSchemaSymbol: inlineFields.length > 0 ? undefined : schemaSymbolFromExpression(initializer),
+        inlineFields,
+        line: initializer?.getStartLineNumber()
+      };
+    }
+
+    const inlineFields = extractFieldsFromObjectLiteral(argument);
+
+    if (inlineFields.length > 0) {
+      return {
+        inlineFields,
+        line: argument.getStartLineNumber()
+      };
+    }
+  }
+
+  for (const argument of call.getArguments()) {
+    const inlineFields = extractSchemaFieldsFromExpression(argument);
+
+    if (inlineFields.length > 0) {
+      return {
+        inlineFields,
+        line: argument.getStartLineNumber()
+      };
+    }
+
+    const symbol = schemaSymbolFromExpression(argument);
+
+    if (symbol && symbol !== toolName) {
+      return {
+        inputSchemaSymbol: symbol,
+        inlineFields: [],
+        line: argument.getStartLineNumber()
+      };
+    }
+  }
+
+  return {
+    inlineFields: []
+  };
 }
 
 function extractSchemaSurface(cwd: string, sourceFile: SourceFile, graph: MutableGraph): void {
@@ -768,6 +905,8 @@ const readDatabaseMethods = new Set(["aggregate", "count", "findFirst", "findMan
 const writeDatabaseMethods = new Set(["create", "createMany", "delete", "deleteMany", "insert", "update", "updateMany", "upsert"]);
 const databaseMethods = new Set([...readDatabaseMethods, ...writeDatabaseMethods]);
 const httpMethods = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
+const toolFactoryNames = new Set(["tool", "createTool", "defineTool"]);
+const toolRegistrationMethods = new Set(["tool", "registerTool"]);
 
 function routePathFromFile(file: string): string | undefined {
   const normalized = file.replaceAll("\\", "/");
@@ -800,6 +939,89 @@ function looksLikeToolObject(
   return variableName.includes("tool")
     || Boolean(objectLiteral.getProperty("execute"))
     || Boolean(objectLiteral.getProperty("inputSchema"));
+}
+
+function looksLikeToolRegistrationCall(call: CallExpression): boolean {
+  const expression = call.getExpression();
+
+  if (Node.isIdentifier(expression)) {
+    return toolFactoryNames.has(expression.getText());
+  }
+
+  if (Node.isPropertyAccessExpression(expression)) {
+    return toolRegistrationMethods.has(expression.getName());
+  }
+
+  return false;
+}
+
+function toolNameFromRegistrationCall(call: CallExpression, fallbackSymbol?: string): string {
+  const firstStringArg = getStringLiteralValue(call.getArguments()[0]);
+
+  if (firstStringArg) {
+    return firstStringArg;
+  }
+
+  for (const argument of call.getArguments()) {
+    if (!Node.isObjectLiteralExpression(argument)) {
+      continue;
+    }
+
+    const name = getStringProperty(argument, "name");
+
+    if (name) {
+      return name;
+    }
+  }
+
+  return fallbackSymbol ?? "registered_tool";
+}
+
+function isVariableInitializer(call: CallExpression): boolean {
+  return Node.isVariableDeclaration(call.getParent());
+}
+
+function extractSchemaFieldsFromExpression(node: TsMorphNode | undefined): string[] {
+  if (!node) {
+    return [];
+  }
+
+  if (Node.isObjectLiteralExpression(node)) {
+    return extractFieldsFromObjectLiteral(node);
+  }
+
+  if (Node.isCallExpression(node) && node.getExpression().getText() === "z.object") {
+    const objectLiteral = node.getArguments().find(Node.isObjectLiteralExpression);
+    return objectLiteral ? extractFieldsFromObjectLiteral(objectLiteral) : [];
+  }
+
+  return [];
+}
+
+function extractFieldsFromObjectLiteral(objectLiteral: ObjectLiteralExpression): string[] {
+  return objectLiteral.getProperties().flatMap((property) => {
+    if (!Node.isPropertyAssignment(property)) {
+      return [];
+    }
+
+    const initializerText = property.getInitializer()?.getText() ?? "";
+
+    if (!/\bz\.[A-Za-z0-9_]+\s*\(/.test(initializerText)) {
+      return [];
+    }
+
+    const name = property.getName();
+    return name ? [name] : [];
+  });
+}
+
+function schemaSymbolFromExpression(node: TsMorphNode | undefined): string | undefined {
+  if (!node || !Node.isIdentifier(node)) {
+    return undefined;
+  }
+
+  const text = node.getText();
+  return /schema$/i.test(text) ? text : undefined;
 }
 
 function toolIdForName(name: string): string {

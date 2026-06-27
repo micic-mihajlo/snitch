@@ -162,6 +162,77 @@ describe("extractTypeScriptGraph", () => {
     expect(edgeIds).not.toContain("edge:endpoint_get_api_messages-uses-env_openai_api_key");
   });
 
+  it("extracts MCP-style registered tools with schemas and side effects", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "snitch-mcp-tool-extractor-"));
+    tempDirs.push(tempRoot);
+    await mkdir(join(tempRoot, "src/mcp"), { recursive: true });
+    await writeFile(
+      join(tempRoot, "src/mcp/server.ts"),
+      [
+        "import { z } from \"zod\";",
+        "import { McpServer } from \"@modelcontextprotocol/sdk/server/mcp.js\";",
+        "",
+        "const server = new McpServer({ name: \"builder-tools\", version: \"1.0.0\" });",
+        "const createIssueInputSchema = z.object({",
+        "  title: z.string(),",
+        "  body: z.string().optional()",
+        "});",
+        "",
+        "server.registerTool(",
+        "  \"create_issue\",",
+        "  { title: \"Create issue\", inputSchema: createIssueInputSchema },",
+        "  async (input) => {",
+        "    await fetch(\"https://api.github.com/repos/acme/widgets/issues\", {",
+        "      method: \"POST\",",
+        "      headers: { authorization: `Bearer ${process.env.GITHUB_TOKEN}` },",
+        "      body: JSON.stringify(input)",
+        "    });",
+        "  }",
+        ");",
+        "",
+        "server.tool(\"send_status\", { channel: z.string() }, async ({ channel }) => {",
+        "  await fetch(\"https://hooks.slack.com/services/T000/B000/XXX\", {",
+        "    method: \"POST\",",
+        "    body: JSON.stringify({ channel })",
+        "  });",
+        "});",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const result = extractTypeScriptGraph({ cwd: tempRoot });
+    const nodeIds = result.snapshot.graph.nodes.map((node) => node.id);
+    const edgeIds = result.snapshot.graph.edges.map((edge) => edge.id);
+
+    expect(nodeIds).toEqual(
+      expect.arrayContaining([
+        "tool:create_issue",
+        "schema:create_issue_input",
+        "tool:send_status",
+        "schema:send_status_input",
+        "external:api.github.com",
+        "external:hooks.slack.com",
+        "env:GITHUB_TOKEN"
+      ])
+    );
+    expect(edgeIds).toEqual(
+      expect.arrayContaining([
+        "edge:create-issue-validates-input",
+        "edge:create-issue-calls-provider",
+        "edge:tool_create_issue-uses-env_github_token",
+        "edge:tool_send_status-validates-schema_send_status_input",
+        "edge:tool_send_status-calls-external_hooks_slack_com"
+      ])
+    );
+    expect(result.snapshot.warnings.map((warning) => warning.id)).toEqual(
+      expect.arrayContaining([
+        "warning:tool_audit_log_missing:create_issue",
+        "warning:secret_redaction_missing:create_issue"
+      ])
+    );
+  });
+
   it("extracts database reads and writes from common TypeScript data clients", async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), "snitch-database-extractor-"));
     tempDirs.push(tempRoot);
