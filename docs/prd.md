@@ -42,6 +42,13 @@ The core experience is a split screen:
 
 The product must remain universal. Snitch should work from a plain prompt, local spec, GitHub issue, Linear ticket, 8090 Work Order, or any MCP resource that describes intended work. 8090 Software Factory is an optional rich task-source adapter, not the product identity.
 
+The hackathon build should feel like something you add to the coding agent's background loop, not a dashboard the user has to babysit. The local CLI and hook adapter are therefore part of the product surface:
+
+- `snitch init` creates `.snitch/config.json`, `.snitch/session.json`, `.snitch/events.jsonl`, and a hook adapter.
+- `snitch event` records hook events without storing raw payloads and regenerates graph artifacts.
+- `snitch status` lets the user check whether the background companion is alive.
+- `snitch finalize` writes the handoff and PR-ready Markdown.
+
 The architecture has two separate planes:
 
 1. Local capture plane:
@@ -200,6 +207,12 @@ Snitch should be structured as local services and testable packages:
   - hashing
   - diff engine
   - contract/warning edge types
+
+- `packages/cli`
+  - local background companion commands
+  - Flow Guardian-style `.snitch/` initialization
+  - generated coding-agent hook adapter
+  - privacy-preserving event capture
 
 - `packages/snitchd`
   - local collector

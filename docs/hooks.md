@@ -23,13 +23,36 @@ The local Flow Guardian setup inspected in `marshmallow` is lightweight:
 
 That maps well to Snitch:
 
+- `.snitch/config.json` for local background behavior
 - `.snitch/session.json` for live run state
+- `.snitch/events.jsonl` for privacy-preserving hook event summaries
 - `.snitch/graph.json` for latest graph IR
 - `.snitch/timeline.jsonl` for graph diffs over time
 - `.snitch/handoff.md` for final summary
 - `.snitch/pr-comment.md` for the PR artifact body
 
 Flow Guardian's useful idea is durable local state, not GitHub access.
+
+## Current CLI Shape
+
+The current MVP implements the Flow Guardian-style local layer through `pnpm snitch`:
+
+```bash
+pnpm snitch init --task "Watch this coding-agent session"
+printf '{"tool_name":"apply_patch","file_path":"src/tools/issues.ts"}' | pnpm snitch event --source codex --hook PostToolUse
+pnpm snitch status
+pnpm snitch finalize
+```
+
+`init` writes `.snitch/config.json`, `.snitch/session.json`, `.snitch/events.jsonl`, and `.snitch/hooks/codex-hook.mjs`.
+
+The generated hook adapter is the thing a coding agent runs in the background:
+
+```bash
+node .snitch/hooks/codex-hook.mjs PostToolUse
+```
+
+For the hackathon slice, each captured event advances the deterministic replay graph and regenerates the same artifacts the dashboard and PR comment consume. The hook log stores event metadata plus a hash and small safe summary, not the full raw payload.
 
 ## Hook Layers
 
@@ -104,9 +127,9 @@ Use review comments only for specific changed lines. Snitch's first artifact sho
 
 For the hackathon, build hooks in this order:
 
-1. File watcher + replay script: proves universal live graph.
-2. `.snitch/` local state: stores graph, timeline, handoff, PR comment.
-3. Agent hook adapter: optional, captures tool-level events when available.
+1. `.snitch/` local state: stores config, session, events, graph, timeline, handoff, PR comment.
+2. Agent hook adapter: captures tool-level events when available.
+3. File watcher + replay script: proves universal live graph when hooks are unavailable.
 4. GitHub Action template: runs on `pull_request` and posts the generated Markdown/Mermaid summary.
 
 Do not add GitHub MCP to the core demo. If GitHub is involved, make it a publish hook.

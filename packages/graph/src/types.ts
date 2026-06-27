@@ -121,6 +121,7 @@ export type SnitchArtifactInput = {
   createdAt: string;
   runId: string;
   task: string;
+  source?: string;
 };
 
 export type SnitchArtifacts = {

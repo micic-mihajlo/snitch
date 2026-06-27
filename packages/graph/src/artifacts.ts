@@ -11,7 +11,7 @@ export function buildSnitchArtifacts(input: SnitchArtifactInput): SnitchArtifact
         runId: input.runId,
         task: input.task,
         createdAt: input.createdAt,
-        source: "snitch-demo-replay",
+        source: input.source ?? "snitch-demo-replay",
         reviewSnapshotId: input.reviewSnapshot.id
       },
       null,

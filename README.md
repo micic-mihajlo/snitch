@@ -1,13 +1,16 @@
 # Snitch
 
-Live visual truth for AI coding agents.
+Background truth layer for AI coding agents.
 
-Snitch watches a repo while an AI coding agent changes it, derives the system shape from the code, and renders the changes immediately as diagrams, timelines, and warnings. The demo should feel like the codebase is becoming visible at machine speed.
+Snitch installs into a coding session as a local companion. Agent hooks feed it events in the background, Snitch keeps durable `.snitch/` state, and the visual/Markdown surfaces update from the same graph IR. The demo should feel like the codebase is becoming visible at machine speed while the agent is still working.
 
 ## Current MVP
 
 This repo now includes a working first slice:
 
+- background CLI: `pnpm snitch init`, `event`, `status`, and `finalize`
+- generated hook adapter at `.snitch/hooks/codex-hook.mjs`
+- privacy-preserving local event log at `.snitch/events.jsonl`
 - deterministic graph IR, hashing, diffing, and last-good-graph behavior
 - replayed issue-tool demo graph with missing companion warnings
 - Mermaid, handoff, timeline, graph JSON, and PR-comment artifact generation
@@ -18,14 +21,19 @@ This repo now includes a working first slice:
 
 ```bash
 pnpm install
+pnpm snitch init --task "Add an external issue-creation tool to this coding assistant"
 pnpm dev
 ```
 
-The dashboard runs through `apps/web` and opens a local Vite server. The first screen is the Snitch tool surface: live graph, warning rail, timeline, sponsor lane, and PR artifact preview.
+`pnpm snitch init` creates the local background state and hook adapter. The dashboard runs through `apps/web` and opens a local Vite server. The first screen is the Snitch inspection surface: live graph, warning rail, timeline, sponsor lane, and PR artifact preview.
 
 Useful commands:
 
 ```bash
+pnpm snitch init --task "Watch this coding-agent session"
+printf '{"tool_name":"apply_patch","file_path":"src/tools/issues.ts"}' | pnpm snitch event --source codex --hook PostToolUse
+pnpm snitch status
+pnpm snitch finalize
 pnpm test
 pnpm build
 pnpm verify:browser
@@ -36,6 +44,30 @@ pnpm smoke:backboard
 
 Local credentials live in `.env`; `.env.example` lists the supported keys. `CEREBRAS_MODEL` can be a public model ID such as `gpt-oss-120b` or an org dedicated endpoint ID when available.
 
+## Background Agent Setup
+
+Snitch follows the Flow Guardian pattern: small local config, durable handoff state, no GitHub write powers inside the agent loop.
+
+After `pnpm snitch init`, point the coding agent at:
+
+```bash
+node .snitch/hooks/codex-hook.mjs <hook-name>
+```
+
+The generated adapter calls back into this Snitch checkout and records:
+
+- source and hook name
+- payload hash and byte count
+- safe event summary keys such as tool name, file path, command hash/byte count, status, or exit code
+
+It does not store the raw hook payload. Each event advances the demo graph sequence and regenerates:
+
+- `.snitch/graph.json`
+- `.snitch/timeline.jsonl`
+- `.snitch/mermaid.mmd`
+- `.snitch/handoff.md`
+- `.snitch/pr-comment.md`
+
 ## Demo Thesis
 
 The wow is not "AI generated docs." The wow is:
@@ -45,6 +77,7 @@ The wow is not "AI generated docs." The wow is:
 The fastest path to a strong demo is a split screen:
 
 - Left: a real coding agent editing a prepared TypeScript app.
+- Background: Snitch hook adapter capturing the agent's session events.
 - Right: Snitch showing the live API/tool/data-flow graph, a fast narration ticker, and generated Mermaid/HTML diagrams.
 
 The room should watch nodes and edges appear as the agent works: endpoint, schema, tool, env var, external API, database write, test, missing companion. The final diff is secondary. The live morphing graph is the product.

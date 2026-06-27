@@ -8,6 +8,7 @@
     "build": "pnpm -r build",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
+    "snitch": "tsx packages/cli/src/main.ts",
     "dev": "pnpm --filter @snitch/web dev",
     "verify:browser": "tsx scripts/verify-browser.ts",
     "demo:artifacts": "tsx scripts/generate-demo-artifacts.ts",
