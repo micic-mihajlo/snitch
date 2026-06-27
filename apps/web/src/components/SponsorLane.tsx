@@ -5,9 +5,16 @@ type Props = {
   ruleCount: number;
   cerebrasStatus: string;
   backboardStatus: string;
+  memoryStatus: string;
 };
 
-export function SponsorLane({ narration, ruleCount, cerebrasStatus, backboardStatus }: Props) {
+export function SponsorLane({
+  narration,
+  ruleCount,
+  cerebrasStatus,
+  backboardStatus,
+  memoryStatus
+}: Props) {
   return (
     <section className="sponsor-panel" aria-label="Sponsor integration lanes">
       <div className="sponsor-row">
@@ -22,9 +29,8 @@ export function SponsorLane({ narration, ruleCount, cerebrasStatus, backboardSta
         <BrainCircuit aria-hidden="true" />
         <div>
           <h2>Backboard</h2>
-          <p>
-            {backboardStatus} / {ruleCount} repo rules
-          </p>
+          <p>{backboardStatus} / {ruleCount} repo rules</p>
+          <p>memory: {memoryStatus}</p>
         </div>
       </div>
     </section>

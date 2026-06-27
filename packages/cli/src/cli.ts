@@ -16,6 +16,7 @@ import {
   loadBackboardRepoRules,
   narrateWithCerebras,
   rankWarningsWithCerebras,
+  rememberBackboardWarningDecision,
   type RankedWarning,
   type ReplaySnapshot,
   type SnitchArtifacts,
@@ -119,6 +120,7 @@ type LiveState = {
     timeline: string;
   };
   sponsors?: SponsorArtifact;
+  memory?: MemoryArtifact;
 };
 
 type SponsorArtifact = {
@@ -141,6 +143,16 @@ type SponsorResultStatus = "ok" | "disabled" | "fallback";
 type SponsorOptions = {
   offline: boolean;
   now: Date;
+};
+
+type MemoryArtifact = {
+  generatedAt: string;
+  backboard: {
+    status: SponsorResultStatus;
+    decision: "accepted";
+    rememberedWarnings: number;
+    warningIds: string[];
+  };
 };
 
 const eventsFile = ".snitch/events.jsonl";
@@ -398,10 +410,12 @@ async function finalizeSnitch(cwd: string, now: Date): Promise<string> {
 
     delete updatedSession.lastAnalysisError;
     await writeJson(cwd, ".snitch/session.json", updatedSession);
+    const memory = await rememberWarningsOnFinalize(cwd, now);
 
     return [
       "Snitch finalized the background session.",
       "- Graph: refreshed from TypeScript target",
+      formatMemoryStatus(memory),
       "- PR body: .snitch/pr-comment.md",
       "- Handoff: .snitch/handoff.md",
       "- Mermaid: .snitch/mermaid.mmd"
@@ -426,9 +440,11 @@ async function finalizeSnitch(cwd: string, now: Date): Promise<string> {
     source: "snitch-background"
   });
   await writeJson(cwd, ".snitch/session.json", updatedSession);
+  const memory = await rememberWarningsOnFinalize(cwd, now);
 
   return [
     "Snitch finalized the background session.",
+    formatMemoryStatus(memory),
     "- PR body: .snitch/pr-comment.md",
     "- Handoff: .snitch/handoff.md",
     "- Mermaid: .snitch/mermaid.mmd"
@@ -514,12 +530,10 @@ async function startLiveServer(cwd: string, port: number, intervalMs: number): P
 
 export async function readLiveState(cwd: string): Promise<LiveState> {
   const graph = JSON.parse(await readFile(resolve(cwd, ".snitch/graph.json"), "utf8")) as SnitchGraph;
-  const warningsText = await readTextIfExists(cwd, ".snitch/warnings.json");
-  const warnings = warningsText
-    ? (JSON.parse(warningsText) as SnitchWarning[])
-    : warningsFromGraph(graph);
+  const warnings = await readWarnings(cwd, graph);
   const sessionText = await readTextIfExists(cwd, ".snitch/session.json");
   const sponsorsText = await readTextIfExists(cwd, ".snitch/sponsors.json");
+  const memoryText = await readTextIfExists(cwd, ".snitch/memory.json");
   const state: LiveState = {
     ok: true,
     cwd,
@@ -537,6 +551,10 @@ export async function readLiveState(cwd: string): Promise<LiveState> {
 
   if (sponsorsText) {
     state.sponsors = JSON.parse(sponsorsText) as SponsorArtifact;
+  }
+
+  if (memoryText) {
+    state.memory = JSON.parse(memoryText) as MemoryArtifact;
   }
 
   return state;
@@ -583,10 +601,7 @@ function handleLiveEvents(cwd: string, response: ServerResponse, intervalMs: num
 
 async function writeSponsorArtifacts(cwd: string, options: SponsorOptions): Promise<string> {
   const graph = JSON.parse(await readFile(resolve(cwd, ".snitch/graph.json"), "utf8")) as SnitchGraph;
-  const warningsText = await readTextIfExists(cwd, ".snitch/warnings.json");
-  const warnings = warningsText
-    ? (JSON.parse(warningsText) as SnitchWarning[])
-    : warningsFromGraph(graph);
+  const warnings = await readWarnings(cwd, graph);
   const sessionText = await readTextIfExists(cwd, ".snitch/session.json");
   const session = sessionText ? (JSON.parse(sessionText) as { task?: string }) : {};
   const task = session.task ?? defaultTask;
@@ -686,6 +701,58 @@ async function writeSponsorArtifacts(cwd: string, options: SponsorOptions): Prom
     `- Ranked warnings: ${artifact.rankedWarnings.length}`,
     "- Updated: .snitch/sponsors.json"
   ].join("\n") + "\n";
+}
+
+async function rememberWarningsOnFinalize(cwd: string, now: Date): Promise<MemoryArtifact> {
+  const graph = JSON.parse(await readFile(resolve(cwd, ".snitch/graph.json"), "utf8")) as SnitchGraph;
+  const warnings = await readWarnings(cwd, graph);
+  const warningIds = warnings.map((warning) => warning.id);
+  const env = await loadRuntimeEnv(cwd);
+  const artifact: MemoryArtifact = {
+    generatedAt: now.toISOString(),
+    backboard: {
+      status: "disabled",
+      decision: "accepted",
+      rememberedWarnings: 0,
+      warningIds
+    }
+  };
+
+  const apiKey = env.BACKBOARD_API_KEY;
+
+  if (!apiKey) {
+    await writeJson(cwd, ".snitch/memory.json", artifact);
+    return artifact;
+  }
+
+  const fetcher = createTimeoutFetcher(1600);
+  const results = await Promise.all(warnings.map((warning) => {
+    const input: Parameters<typeof rememberBackboardWarningDecision>[0] = {
+      apiKey,
+      warning,
+      decision: "accepted",
+      fetcher
+    };
+
+    if (env.BACKBOARD_ASSISTANT_ID) {
+      input.assistantId = env.BACKBOARD_ASSISTANT_ID;
+    }
+
+    return rememberBackboardWarningDecision(input);
+  }));
+  const rememberedWarnings = results.filter((result) => result.status === "ok").length;
+  const status: SponsorResultStatus =
+    results.length === 0 || rememberedWarnings === results.length ? "ok" : "fallback";
+
+  artifact.backboard.status = status;
+  artifact.backboard.rememberedWarnings = rememberedWarnings;
+  await writeJson(cwd, ".snitch/memory.json", artifact);
+
+  return artifact;
+}
+
+function formatMemoryStatus(memory: MemoryArtifact): string {
+  return `- Backboard memory: ${memory.backboard.status} / ${memory.backboard.rememberedWarnings} warning decisions`;
 }
 
 function sendJson(response: ServerResponse, status: number, value: unknown): void {
@@ -794,8 +861,18 @@ function hashLiveState(state: LiveState): string {
     session: state.session,
     graph: state.graph,
     warnings: state.warnings,
+    sponsors: state.sponsors,
+    memory: state.memory,
     artifacts: state.artifacts
   });
+}
+
+async function readWarnings(cwd: string, graph: SnitchGraph): Promise<SnitchWarning[]> {
+  const warningsText = await readTextIfExists(cwd, ".snitch/warnings.json");
+
+  return warningsText
+    ? (JSON.parse(warningsText) as SnitchWarning[])
+    : warningsFromGraph(graph);
 }
 
 async function updateGraphForEvent(

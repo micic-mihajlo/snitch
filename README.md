@@ -18,6 +18,7 @@ This repo now includes a working first slice:
 - local live server: `pnpm snitch watch` serves `.snitch` artifacts to the dashboard
 - graph scope controls for all, changed, and selected-warning impact views
 - sponsor artifact lane: `pnpm snitch sponsors` writes Cerebras narration, warning ranking, repair prompts, and Backboard repo-rule status
+- finalize memory lane: `pnpm snitch finalize` writes Backboard warning-decision memory with hashed evidence only
 - scripted repair pass: `pnpm demo:repair` adds the missing companion work and regenerates warning-free artifacts
 - one-command live demo runner: `pnpm demo:live`
 - prepared demo assistant app under `apps/demo-app`
@@ -95,6 +96,8 @@ It does not store the raw hook payload. File-changing events refresh the configu
 - `.snitch/handoff.md`
 - `.snitch/pr-comment.md`
 - `.snitch/sponsors.json`
+
+`snitch finalize` also writes `.snitch/memory.json`. With Backboard credentials, it remembers active warning decisions as safe metadata and evidence hashes; without credentials, it records disabled status so the live dashboard can show the memory lane honestly.
 
 `pnpm snitch watch` exposes:
 

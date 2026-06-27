@@ -33,6 +33,13 @@ type LiveApiState = {
     };
     rankedWarnings: RankedWarningView[];
   };
+  memory?: {
+    generatedAt: string;
+    backboard: {
+      status: string;
+      rememberedWarnings: number;
+    };
+  };
 };
 
 export type RankedWarningView = {
@@ -53,6 +60,7 @@ type LiveSnitchState = {
     ruleCount: number;
     cerebrasStatus: string;
     backboardStatus: string;
+    memoryStatus: string;
   };
   rankedWarnings?: RankedWarningView[];
   graphSourceLabel: string;
@@ -115,8 +123,14 @@ export function useLiveSnitch(): LiveSnitchState {
                 apiState.sponsors.cerebras.status,
                 apiState.sponsors.cerebras.model
               ),
-              backboardStatus: apiState.sponsors.backboard.status
+              backboardStatus: apiState.sponsors.backboard.status,
+              memoryStatus: "pending"
             };
+
+            if (apiState.memory) {
+              nextState.sponsorLane.memoryStatus = `${apiState.memory.backboard.status} / ${apiState.memory.backboard.rememberedWarnings} memories`;
+            }
+
             nextState.rankedWarnings = apiState.sponsors.rankedWarnings;
           }
 

@@ -207,20 +207,43 @@ describe("snitch cli", () => {
 
   it("finalizes PR-ready artifacts from the background session", async () => {
     const cwd = await tempRepo();
+    const originalBackboardApiKey = process.env.BACKBOARD_API_KEY;
+    const originalBackboardAssistantId = process.env.BACKBOARD_ASSISTANT_ID;
+
+    delete process.env.BACKBOARD_API_KEY;
+    delete process.env.BACKBOARD_ASSISTANT_ID;
 
     await runCli(["init", "--task", "Wire an issue tool"], { cwd, now });
-    const result = await runCli(["finalize"], {
-      cwd,
-      now: new Date("2026-06-27T12:05:00.000Z")
-    });
+    try {
+      const result = await runCli(["finalize"], {
+        cwd,
+        now: new Date("2026-06-27T12:05:00.000Z")
+      });
 
-    expect(result.code).toBe(0);
-    await expect(readFile(join(cwd, ".snitch/pr-comment.md"), "utf8")).resolves.toContain(
-      "No audit trail for external tool calls"
-    );
-    await expect(readFile(join(cwd, ".snitch/session.json"), "utf8")).resolves.toContain(
-      "\"status\": \"finalized\""
-    );
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain("Backboard memory: disabled / 0 warning decisions");
+      await expect(readFile(join(cwd, ".snitch/pr-comment.md"), "utf8")).resolves.toContain(
+        "No audit trail for external tool calls"
+      );
+      await expect(readFile(join(cwd, ".snitch/session.json"), "utf8")).resolves.toContain(
+        "\"status\": \"finalized\""
+      );
+      await expect(readFile(join(cwd, ".snitch/memory.json"), "utf8")).resolves.toContain(
+        "\"status\": \"disabled\""
+      );
+    } finally {
+      if (originalBackboardApiKey === undefined) {
+        delete process.env.BACKBOARD_API_KEY;
+      } else {
+        process.env.BACKBOARD_API_KEY = originalBackboardApiKey;
+      }
+
+      if (originalBackboardAssistantId === undefined) {
+        delete process.env.BACKBOARD_ASSISTANT_ID;
+      } else {
+        process.env.BACKBOARD_ASSISTANT_ID = originalBackboardAssistantId;
+      }
+    }
   });
 });
 

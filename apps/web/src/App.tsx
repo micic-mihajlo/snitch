@@ -60,7 +60,8 @@ export default function App() {
     narration,
     ruleCount: 0,
     cerebrasStatus: "static fallback",
-    backboardStatus: "not connected"
+    backboardStatus: "not connected",
+    memoryStatus: "not connected"
   };
   const scopedGraph = useMemo(
     () => scopeGraph(currentSnapshot.graph, diff, graphScope, selectedWarning?.id),
@@ -174,6 +175,7 @@ export default function App() {
           ruleCount={sponsorLane.ruleCount}
           cerebrasStatus={sponsorLane.cerebrasStatus}
           backboardStatus={sponsorLane.backboardStatus}
+          memoryStatus={sponsorLane.memoryStatus}
         />
         <ArtifactPanel artifacts={artifacts} />
       </section>

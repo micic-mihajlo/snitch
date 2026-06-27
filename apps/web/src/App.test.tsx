@@ -129,6 +129,13 @@ describe("Snitch dashboard", () => {
                 repairPrompt: "Write a redacted audit record for every create_issue call."
               }
             ]
+          },
+          memory: {
+            generatedAt: "2026-06-27T12:05:00.000Z",
+            backboard: {
+              status: "ok",
+              rememberedWarnings: 2
+            }
           }
         })
       }))
@@ -151,6 +158,7 @@ describe("Snitch dashboard", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("ok · glm-5.1")).toBeInTheDocument();
     expect(screen.getByText("ok / 2 repo rules")).toBeInTheDocument();
+    expect(screen.getByText(/memory: ok \/ 2 memories/)).toBeInTheDocument();
     expect(screen.getByText(/Cerebras says the issue tool/i)).toBeInTheDocument();
   });
 });
