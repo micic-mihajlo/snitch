@@ -69,6 +69,7 @@ export function extractTypeScriptGraph(options: ExtractTypeScriptGraphOptions): 
     extractToolSurface(options.cwd, sourceFile, graph);
     extractSchemaSurface(options.cwd, sourceFile, graph);
     extractProviderSurface(options.cwd, sourceFile, graph);
+    extractCompanionSurface(options.cwd, sourceFile, graph);
     extractTestSurface(options.cwd, sourceFile, graph);
   }
 
@@ -223,6 +224,57 @@ function extractProviderSurface(cwd: string, sourceFile: SourceFile, graph: Muta
   }
 }
 
+function extractCompanionSurface(cwd: string, sourceFile: SourceFile, graph: MutableGraph): void {
+  const file = relativePath(cwd, sourceFile);
+
+  for (const variable of sourceFile.getVariableDeclarations()) {
+    const name = variable.getName();
+    const lowerName = name.toLowerCase();
+
+    if (name === "toolAuditLog" || lowerName.includes("toolauditlog")) {
+      addNode(graph, {
+        id: "service:tool_audit_log",
+        kind: "service",
+        label: "Tool audit log",
+        file,
+        line: variable.getStartLineNumber(),
+        meta: {
+          symbol: name,
+          records: "external tool calls"
+        }
+      });
+    }
+
+    if (name === "secretRedactor" || lowerName.includes("secretredactor")) {
+      addNode(graph, {
+        id: "service:secret_redactor",
+        kind: "service",
+        label: "Secret redactor",
+        file,
+        line: variable.getStartLineNumber(),
+        meta: {
+          symbol: name,
+          scope: "tool inputs and provider responses"
+        }
+      });
+    }
+
+    if (name === "issueToolPermissionScope" || name === "createIssuePermissionScope") {
+      addNode(graph, {
+        id: "contract:issue_tool_permission_scope",
+        kind: "contract",
+        label: "Per-session permission scope",
+        file,
+        line: variable.getStartLineNumber(),
+        meta: {
+          symbol: name,
+          rule: "external issue creation requires scoped approval"
+        }
+      });
+    }
+  }
+}
+
 function extractTestSurface(cwd: string, sourceFile: SourceFile, graph: MutableGraph): void {
   const file = relativePath(cwd, sourceFile);
 
@@ -294,6 +346,36 @@ function connectKnownIssueTool(graph: MutableGraph): void {
       "test:issue_tool_rejects_unauthorized",
       "tool:create_issue",
       "covers"
+    );
+  }
+
+  if (graph.nodes.has("tool:create_issue") && graph.nodes.has("service:tool_audit_log")) {
+    addEdge(
+      graph,
+      "edge:create-issue-writes-audit",
+      "tool:create_issue",
+      "service:tool_audit_log",
+      "writes"
+    );
+  }
+
+  if (graph.nodes.has("tool:create_issue") && graph.nodes.has("service:secret_redactor")) {
+    addEdge(
+      graph,
+      "edge:create-issue-calls-redactor",
+      "tool:create_issue",
+      "service:secret_redactor",
+      "calls"
+    );
+  }
+
+  if (graph.nodes.has("tool:create_issue") && graph.nodes.has("contract:issue_tool_permission_scope")) {
+    addEdge(
+      graph,
+      "edge:create-issue-satisfies-permission",
+      "tool:create_issue",
+      "contract:issue_tool_permission_scope",
+      "satisfies"
     );
   }
 }

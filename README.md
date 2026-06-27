@@ -18,6 +18,7 @@ This repo now includes a working first slice:
 - local live server: `pnpm snitch watch` serves `.snitch` artifacts to the dashboard
 - graph scope controls for all, changed, and selected-warning impact views
 - sponsor artifact lane: `pnpm snitch sponsors` writes Cerebras narration and Backboard repo-rule status
+- scripted repair pass: `pnpm demo:repair` adds the missing companion work and regenerates warning-free artifacts
 - prepared demo assistant app under `apps/demo-app`
 - deterministic graph IR, hashing, diffing, and last-good-graph behavior
 - replayed issue-tool demo graph with missing companion warnings
@@ -50,6 +51,7 @@ pnpm snitch sponsors --offline
 pnpm snitch sponsors
 pnpm snitch watch --port 4767
 pnpm dev:live
+pnpm demo:repair
 pnpm snitch status
 pnpm snitch finalize
 pnpm test
@@ -101,6 +103,8 @@ It does not store the raw hook payload. File-changing events refresh the configu
 - `GET /health`
 - `GET /api/state`
 - `GET /api/events` for Server-Sent Events
+
+`pnpm demo:repair` is the stage-two demo move: it patches `apps/demo-app` with the audit log, secret redactor, scoped permission contract, and unauthorized-call test, then regenerates `.snitch` artifacts. After a live dashboard is running, this is the moment where the warning rail collapses to "No active Snitch warnings."
 
 For code-derived artifacts, run:
 

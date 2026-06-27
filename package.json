@@ -14,6 +14,7 @@
     "verify:browser": "tsx scripts/verify-browser.ts",
     "demo:artifacts": "tsx scripts/generate-demo-artifacts.ts",
     "demo:extract": "tsx scripts/generate-extracted-artifacts.ts",
+    "demo:repair": "tsx scripts/apply-demo-repair.ts --target apps/demo-app",
     "smoke:cerebras": "tsx scripts/smoke-cerebras.ts",
     "smoke:backboard": "tsx scripts/smoke-backboard.ts"
   },
