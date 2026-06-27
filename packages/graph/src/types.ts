@@ -141,14 +141,31 @@ export type SnitchArtifactInput = {
   source?: string;
 };
 
-export type SnitchArtifacts = {
-  "session.json": string;
-  "graph.json": string;
-  "warnings.json": string;
-  "findings.json": string;
-  "next-action.md": string;
-  "timeline.jsonl": string;
-  "mermaid.mmd": string;
-  "handoff.md": string;
-  "pr-comment.md": string;
-};
+export type SnitchArtifactName =
+  | "session.json"
+  | "graph.json"
+  | "warnings.json"
+  | "findings.json"
+  | "briefing.json"
+  | "briefing.md"
+  | "next-action.md"
+  | "timeline.jsonl"
+  | "mermaid.mmd"
+  | "handoff.md"
+  | "pr-comment.md";
+
+export const snitchArtifactNames = [
+  "session.json",
+  "graph.json",
+  "warnings.json",
+  "findings.json",
+  "briefing.json",
+  "briefing.md",
+  "next-action.md",
+  "timeline.jsonl",
+  "mermaid.mmd",
+  "handoff.md",
+  "pr-comment.md"
+] as const satisfies readonly SnitchArtifactName[];
+
+export type SnitchArtifacts = Record<SnitchArtifactName, string>;

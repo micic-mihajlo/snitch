@@ -61,55 +61,18 @@ pnpm demo:live
 
 `pnpm demo:live` prepares code-derived artifacts, writes integration insights, starts `snitch watch` at `http://127.0.0.1:4767`, and starts the dashboard pointed at that local server. Plain `pnpm dev` stays in clean replay fallback mode. The first screen is the Snitch inspection surface: live graph, ranked warning rail, timeline, integration panel, and PR artifact preview.
 
-Useful commands:
+Daily workflow:
 
 ```bash
 pnpm snitch init --agent all --target apps/demo-app --task "Watch this coding-agent session"
-printf '{"tool_name":"apply_patch","file_path":"src/tools/create-issue.ts"}' | pnpm snitch event --source codex --hook PostToolUse
-pnpm snitch analyze --target apps/demo-app --task "Add an external issue-creation tool"
+pnpm snitch watch --target apps/demo-app --insights
+pnpm snitch briefing --task "Add an external issue-creation tool"
 pnpm snitch check --target apps/demo-app --task "Add an external issue-creation tool"
-pnpm snitch check --target apps/demo-app --fail-on medium --json
-pnpm snitch insights --offline
-pnpm snitch insights
-pnpm snitch doctor
-pnpm snitch doctor --json
-pnpm snitch briefing
-pnpm snitch briefing --task "Add an external issue-creation tool" --json
-pnpm snitch verify-intent --task "Add an external issue-creation tool"
-pnpm snitch verify-intent --task "Add an external issue-creation tool" --json
-pnpm snitch verify-repair --warning warning:tool_audit_log_missing:create_issue
-pnpm snitch verify-repair --warning warning:tool_audit_log_missing:create_issue --json
-pnpm snitch next-action
-pnpm snitch next-action --json
-pnpm snitch trace --warning warning:tool_audit_log_missing:create_issue
-pnpm snitch trace --warning warning:tool_audit_log_missing:create_issue --json
-pnpm snitch changed
-pnpm snitch changed --json
-pnpm snitch repair-prompt
 pnpm snitch repair-prompt --warning warning:permission_scope_missing:create_issue
-pnpm snitch findings
-pnpm snitch findings --json
-pnpm snitch impact --warning warning:secret_redaction_missing:create_issue
-pnpm snitch impact --warning warning:secret_redaction_missing:create_issue --json
-pnpm --silent snitch mcp
-pnpm snitch watch --target apps/demo-app --port 4767 --scan-interval 300 --insights
-pnpm dev:live
-pnpm demo:live --offline-integrations
-pnpm demo:reset
-pnpm demo:repair
-pnpm snitch status
-pnpm snitch status --json
-pnpm snitch finalize
-pnpm snitch install-git-hooks
-pnpm snitch publish-github --repo owner/name --pr 123
-pnpm test
-pnpm build
-pnpm verify:browser
-pnpm demo:artifacts
-pnpm demo:extract
-pnpm smoke:cerebras
-pnpm smoke:backboard
+pnpm snitch verify-repair --warning warning:permission_scope_missing:create_issue --target apps/demo-app --task "Add an external issue-creation tool"
 ```
+
+Advanced surfaces exist for agent runtimes, MCP clients, CI, and PR publishing: `event`, `mcp`, `doctor`, `status`, `changed`, `trace`, `impact`, `findings`, `next-action`, `insights`, `finalize`, `install-git-hooks`, and `publish-github`.
 
 Local credentials live in `.env`; `.env.example` lists the supported keys. `CEREBRAS_MODEL` can be a public model ID such as `gpt-oss-120b` or an org dedicated endpoint ID when available. `SNITCH_PROVIDER_TIMEOUT_MS` controls the timeout used by `snitch insights` and live `watch --insights`.
 
@@ -144,6 +107,8 @@ It does not store the raw hook payload. File-changing events refresh the configu
 - `.snitch/graph.json`
 - `.snitch/warnings.json`
 - `.snitch/findings.json`
+- `.snitch/briefing.json`
+- `.snitch/briefing.md`
 - `.snitch/next-action.md`
 - `.snitch/timeline.jsonl`
 - `.snitch/mermaid.mmd`
@@ -188,7 +153,7 @@ It does not store the raw hook payload. File-changing events refresh the configu
 - `GET /api/events` for Server-Sent Events
 - `POST /api/events?source=<agent>&hook=<hook>` for local hook ingestion
 
-The dashboard listens to `/api/events` for low-latency state updates and falls back to polling `/api/state` when EventSource is unavailable. By default, `snitch watch` also polls the configured TypeScript target and regenerates `.snitch/graph.json`, `.snitch/warnings.json`, `.snitch/findings.json`, `.snitch/next-action.md`, `.snitch/mermaid.mmd`, and `.snitch/pr-comment.md` when code files change. Use `--target <repo>` to override the stored analysis target, `--scan-interval <ms>` to tune refresh speed, `--insights` to refresh Cerebras/Backboard insight artifacts after graph refreshes, or `--no-files` to serve artifacts without file watching.
+The dashboard listens to `/api/events` for low-latency state updates and falls back to polling `/api/state` when EventSource is unavailable. By default, `snitch watch` also polls the configured TypeScript target and regenerates `.snitch/graph.json`, `.snitch/warnings.json`, `.snitch/findings.json`, `.snitch/briefing.json`, `.snitch/briefing.md`, `.snitch/next-action.md`, `.snitch/mermaid.mmd`, and `.snitch/pr-comment.md` when code files change. Use `--target <repo>` to override the stored analysis target, `--scan-interval <ms>` to tune refresh speed, `--insights` to refresh Cerebras/Backboard insight artifacts after graph refreshes, or `--no-files` to serve artifacts without file watching.
 
 `/api/state` includes the latest graph, warnings, publishable artifacts, integration status, and the last 50 normalized hook events. The event trace is safe for UI rendering because it contains hashes, byte counts, safe summary keys, and file evidence rather than raw payloads.
 

@@ -29,12 +29,87 @@ export function buildSnitchArtifacts(input: SnitchArtifactInput): SnitchArtifact
     "graph.json": JSON.stringify(input.reviewSnapshot.graph, null, 2),
     "warnings.json": JSON.stringify(input.reviewSnapshot.warnings, null, 2),
     "findings.json": JSON.stringify(findings, null, 2),
+    "briefing.json": JSON.stringify(buildBriefingJson(input.reviewSnapshot, input.task, findings), null, 2),
+    "briefing.md": buildBriefingMarkdown(input.reviewSnapshot, input.task, findings),
     "next-action.md": buildNextAction(input.reviewSnapshot, input.task, findings),
     "timeline.jsonl": buildTimelineJsonl(input.replay),
     "mermaid.mmd": mermaid,
     "handoff.md": buildHandoff(input.reviewSnapshot, input.task, findings),
     "pr-comment.md": buildPrComment(input.reviewSnapshot, mermaid, findings)
   };
+}
+
+function buildBriefingJson(
+  snapshot: ReplaySnapshot,
+  task: string,
+  findings: ReturnType<typeof buildSnitchFindings>
+): Record<string, unknown> {
+  const topFinding = findings[0];
+
+  return {
+    ok: true,
+    generatedAt: snapshot.graph.generatedAt,
+    task,
+    status: topFinding ? "action_required" : "clear",
+    snapshot: {
+      id: snapshot.id,
+      title: snapshot.title,
+      description: snapshot.description
+    },
+    counts: {
+      nodes: snapshot.graph.nodes.length,
+      edges: snapshot.graph.edges.length,
+      warnings: snapshot.warnings.length,
+      findings: findings.length
+    },
+    action: {
+      status: topFinding ? "action_required" : "clear",
+      instruction: topFinding
+        ? `Address ${topFinding.warningId} before handoff. Run ${topFinding.repairCommand}, then rerun Snitch verification.`
+        : "No active Snitch findings. Continue implementation and run Snitch check before handoff.",
+      ...(topFinding ? { topFinding } : {})
+    },
+    impact: formatImpactBullets(snapshot),
+    warnings: snapshot.warnings.map((warning) => ({
+      id: warning.id,
+      severity: warning.severity,
+      title: warning.title,
+      repairPrompt: warning.repairPrompt
+    })),
+    nextCommands: createBriefingNextCommands(task, topFinding)
+  };
+}
+
+function buildBriefingMarkdown(
+  snapshot: ReplaySnapshot,
+  task: string,
+  findings: ReturnType<typeof buildSnitchFindings>
+): string {
+  const topFinding = findings[0];
+  const topFindingLines = topFinding
+    ? [
+        `- [${topFinding.severity}] ${topFinding.title}`,
+        `- Warning ID: ${topFinding.warningId}`,
+        `- Anchor: ${formatFindingAnchor(topFinding)}`,
+        `- Repair: ${topFinding.repairCommand}`
+      ]
+    : ["- none"];
+
+  return [
+    "Snitch briefing",
+    `- Status: ${topFinding ? "action_required" : "clear"}`,
+    `- Task: ${task}`,
+    `- Graph: ${snapshot.graph.nodes.length} nodes, ${snapshot.graph.edges.length} edges, ${snapshot.warnings.length} warning(s)`,
+    "",
+    "Top action:",
+    ...topFindingLines,
+    "",
+    "System impact:",
+    ...formatImpactBullets(snapshot),
+    "",
+    "Next commands:",
+    ...createBriefingNextCommands(task, topFinding).map((command) => `- ${command}`)
+  ].join("\n");
 }
 
 function buildTimelineJsonl(replay: ReplaySnapshot[]): string {
@@ -252,10 +327,37 @@ function formatFindingBullets(findings: ReturnType<typeof buildSnitchFindings>):
   }
 
   return findings.map((finding) => {
-    const location = finding.anchor
-      ? `${finding.anchor.file}${finding.anchor.line ? `:${finding.anchor.line}` : ""}`
-      : "unanchored";
-
-    return `- **${finding.title}** (${finding.severity}) at ${location} - ${finding.repairCommand}`;
+    return `- **${finding.title}** (${finding.severity}) at ${formatFindingAnchor(finding)} - ${finding.repairCommand}`;
   });
+}
+
+function formatFindingAnchor(finding: ReturnType<typeof buildSnitchFindings>[number]): string {
+  return finding.anchor
+    ? `${finding.anchor.file}${finding.anchor.line ? `:${finding.anchor.line}` : ""}`
+    : "unanchored";
+}
+
+function createBriefingNextCommands(
+  task: string,
+  topFinding: ReturnType<typeof buildSnitchFindings>[number] | undefined
+): string[] {
+  const commands = topFinding
+    ? [
+        topFinding.repairCommand,
+        `pnpm snitch trace --warning ${topFinding.warningId} --json`,
+        `pnpm snitch verify-repair --warning ${topFinding.warningId} --task ${shellArgForArtifact(task)} --json`
+      ]
+    : [];
+
+  commands.push(
+    `pnpm snitch verify-intent --task ${shellArgForArtifact(task)} --json`,
+    "pnpm snitch changed --json",
+    "pnpm snitch check --fail-on medium --json"
+  );
+
+  return commands;
+}
+
+function shellArgForArtifact(value: string): string {
+  return `'${value.replaceAll("'", "'\"'\"'")}'`;
 }

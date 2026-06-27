@@ -25,11 +25,13 @@ import {
   type IntentCoverage,
   type RankedWarning,
   type ReplaySnapshot,
+  type SnitchArtifactName,
   type SnitchArtifacts,
   type SnitchFinding,
   type SnitchGraph,
   type SnitchWarning,
-  type IntegrationStatus
+  type IntegrationStatus,
+  snitchArtifactNames
 } from "../../graph/src/index";
 
 const execFileAsync = promisify(execFile);
@@ -88,7 +90,7 @@ type SnitchSession = {
   lastAnalyzedAt?: string;
   lastAnalysisError?: string;
   eventsPath: ".snitch/events.jsonl";
-  artifacts: Array<keyof SnitchArtifacts>;
+  artifacts: SnitchArtifactName[];
 };
 
 type AnalysisWriteResult = {
@@ -138,6 +140,8 @@ type LiveState = {
   events: SnitchEvent[];
   artifacts: {
     findings: string;
+    briefing: string;
+    briefingJson: string;
     nextAction: string;
     mermaid: string;
     prComment: string;
@@ -184,6 +188,8 @@ type SnitchStatusPayload = {
     | "graph"
     | "warnings"
     | "findings"
+    | "briefing"
+    | "briefingJson"
     | "nextAction"
     | "mermaid"
     | "handoff"
@@ -744,13 +750,14 @@ async function analyzeTypeScriptRepo(
   });
 
   await persistAnalysisTarget(cwd, target, now, analysis.snapshot.id);
+  await writeBriefingArtifacts(cwd, { task, target });
 
   return [
     `Snitch analyzed ${target}.`,
     `- Nodes: ${analysis.snapshot.graph.nodes.length}`,
     `- Edges: ${analysis.snapshot.graph.edges.length}`,
     `- Warnings: ${analysis.snapshot.warnings.length}`,
-    "- Updated: .snitch/graph.json, .snitch/findings.json, .snitch/next-action.md, .snitch/mermaid.mmd, .snitch/pr-comment.md"
+    updatedArtifactsLine()
   ].join("\n") + "\n";
 }
 
@@ -773,6 +780,7 @@ async function checkTypeScriptRepo(
   const blockingWarnings = warningsAtOrAboveThreshold(analysis.snapshot.warnings, failOn);
 
   await persistAnalysisTarget(cwd, target, now, analysis.snapshot.id);
+  await writeBriefingArtifacts(cwd, { task, target });
 
   if (flags.has("json")) {
     return {
@@ -823,7 +831,7 @@ async function checkTypeScriptRepo(
       `- Edges: ${analysis.snapshot.graph.edges.length}`,
       `- Warnings: ${analysis.snapshot.warnings.length}`,
       `- Blocking warnings: ${blockingWarnings.length}`,
-      "- Updated: .snitch/graph.json, .snitch/warnings.json, .snitch/findings.json, .snitch/next-action.md, .snitch/pr-comment.md",
+      updatedArtifactsLine(),
       ...warningLines
     ].join("\n") + "\n",
     stderr: ""
@@ -878,6 +886,11 @@ async function readRepairVerificationPayload(
   const activeWarning = analysis.snapshot.warnings.find((warning) => warning.id === warningFlag);
 
   await persistAnalysisTarget(cwd, target, now, analysis.snapshot.id);
+  await writeBriefingArtifacts(cwd, {
+    task,
+    target,
+    ...(activeWarning ? { warning: warningFlag } : {})
+  });
 
   const payload: SnitchRepairVerificationPayload = {
     ok: !activeWarning,
@@ -1028,6 +1041,7 @@ async function initializeSnitch(
   });
   await writeJson(cwd, ".snitch/session.json", session);
   await writeJsonl(cwd, eventsFile, []);
+  await writeBriefingArtifacts(cwd, { task, target });
 
   return [
     "Snitch background companion initialized.",
@@ -1036,7 +1050,7 @@ async function initializeSnitch(
     `- Agent configs: ${generatedConfigs.join(", ")}`,
     `- Analysis target: ${storedTarget}`,
     "- Local state: .snitch/config.json, .snitch/session.json, .snitch/events.jsonl",
-    "- Artifacts: .snitch/graph.json, .snitch/findings.json, .snitch/next-action.md, .snitch/mermaid.mmd, .snitch/pr-comment.md"
+    "- Artifacts: .snitch/ generated evidence"
   ].join("\n") + "\n";
 }
 
@@ -1085,13 +1099,14 @@ async function recordSnitchEvent(
   const nextAction = await readSnitchNextActionPayload(cwd);
   const agentFeedback = formatSnitchNextAction(nextAction);
   await writeText(cwd, ".snitch/next-action.md", agentFeedback);
+  await writeBriefingArtifacts(cwd);
 
   return [
     `Snitch captured ${input.source}:${input.hook}.`,
     `- Events: ${nextEvents.length}`,
     `- Graph: ${graphUpdate.message}`,
     `- Next action: ${formatNextActionSummary(nextAction)}`,
-    "- Updated: .snitch/graph.json, .snitch/findings.json, .snitch/next-action.md, .snitch/mermaid.mmd, .snitch/pr-comment.md"
+    updatedArtifactsLine()
   ].join("\n") + "\n";
 }
 
@@ -1122,11 +1137,13 @@ async function finalizeSnitch(cwd: string, now: Date): Promise<string> {
     delete updatedSession.lastAnalysisError;
     await writeJson(cwd, ".snitch/session.json", updatedSession);
     const memory = await rememberWarningsOnFinalize(cwd, now);
+    await writeBriefingArtifacts(cwd, { task: session.task, target });
 
     return [
       "Snitch finalized the background session.",
       "- Graph: refreshed from TypeScript target",
       formatMemoryStatus(memory),
+      "- Briefing: .snitch/briefing.md",
       "- PR body: .snitch/pr-comment.md",
       "- Handoff: .snitch/handoff.md",
       "- Mermaid: .snitch/mermaid.mmd"
@@ -1152,10 +1169,12 @@ async function finalizeSnitch(cwd: string, now: Date): Promise<string> {
   });
   await writeJson(cwd, ".snitch/session.json", updatedSession);
   const memory = await rememberWarningsOnFinalize(cwd, now);
+  await writeBriefingArtifacts(cwd, { task: session.task, target });
 
   return [
     "Snitch finalized the background session.",
     formatMemoryStatus(memory),
+    "- Briefing: .snitch/briefing.md",
     "- PR body: .snitch/pr-comment.md",
     "- Handoff: .snitch/handoff.md",
     "- Mermaid: .snitch/mermaid.mmd"
@@ -1280,6 +1299,8 @@ async function readStatusArtifacts(cwd: string): Promise<SnitchStatusPayload["ar
     graph: ".snitch/graph.json",
     warnings: ".snitch/warnings.json",
     findings: ".snitch/findings.json",
+    briefing: ".snitch/briefing.md",
+    briefingJson: ".snitch/briefing.json",
     nextAction: ".snitch/next-action.md",
     mermaid: ".snitch/mermaid.mmd",
     handoff: ".snitch/handoff.md",
@@ -1353,6 +1374,7 @@ function createStatusNextCommands(
 ): string[] {
   const commands = [
     "pnpm snitch doctor --json",
+    "pnpm snitch briefing --json",
     "pnpm snitch verify-intent --json",
     "pnpm snitch changed --json",
     "pnpm snitch next-action --json",
@@ -1624,6 +1646,8 @@ async function readArtifactDoctorCheck(cwd: string, target: string): Promise<Doc
     "graph",
     "warnings",
     "findings",
+    "briefing",
+    "briefingJson",
     "nextAction",
     "mermaid",
     "handoff",
@@ -1647,7 +1671,7 @@ async function readArtifactDoctorCheck(cwd: string, target: string): Promise<Doc
     id: "artifacts",
     label: "Generated artifacts",
     status: "pass",
-    detail: `Graph, findings, next action, Mermaid, handoff, and PR comment are present (${totalBytes} bytes).`
+    detail: `Graph, findings, briefing, next action, Mermaid, handoff, and PR comment are present (${totalBytes} bytes).`
   });
 }
 
@@ -1798,6 +1822,7 @@ function createDoctorNextCommands(checks: DoctorCheck[], target: string): string
 
   commands.push(
     "pnpm snitch status --json",
+    "pnpm snitch briefing --json",
     "pnpm snitch changed --json",
     "pnpm snitch next-action --json",
     `pnpm snitch check --target ${shellArgForPrompt(target)} --fail-on medium --json`
@@ -2025,6 +2050,46 @@ function formatBriefingIntegrations(integrations: SnitchStatusPayload["integrati
   ];
 
   return parts.join("; ");
+}
+
+async function writeBriefingArtifacts(
+  cwd: string,
+  input: {
+    task?: string;
+    target?: string;
+    warning?: string;
+  } = {}
+): Promise<SnitchBriefingPayload> {
+  const payload = await readSnitchBriefingPayload(cwd, briefingArtifactFlags(input));
+
+  await Promise.all([
+    writeJson(cwd, ".snitch/briefing.json", payload),
+    writeText(cwd, ".snitch/briefing.md", formatSnitchBriefing(payload))
+  ]);
+
+  return payload;
+}
+
+function briefingArtifactFlags(input: {
+  task?: string;
+  target?: string;
+  warning?: string;
+}): ParsedArgs["flags"] {
+  const flags = new Map<string, string | true>();
+
+  if (input.task) {
+    flags.set("task", input.task);
+  }
+
+  if (input.target) {
+    flags.set("target", input.target);
+  }
+
+  if (input.warning) {
+    flags.set("warning", input.warning);
+  }
+
+  return flags;
 }
 
 async function inspectFile(
@@ -3795,6 +3860,10 @@ export async function refreshWatchedTarget(
 
     delete updatedSession.lastAnalysisError;
     await writeJson(cwd, ".snitch/session.json", updatedSession);
+    await writeBriefingArtifacts(cwd, {
+      task: session.task,
+      target
+    });
 
     const result: WatchRefreshResult = {
       status: "updated",
@@ -3855,6 +3924,8 @@ export async function readLiveState(cwd: string): Promise<LiveState> {
     events: events.slice(-50),
     artifacts: {
       findings: await readTextIfExists(cwd, ".snitch/findings.json"),
+      briefing: await readTextIfExists(cwd, ".snitch/briefing.md"),
+      briefingJson: await readTextIfExists(cwd, ".snitch/briefing.json"),
       nextAction: await readTextIfExists(cwd, ".snitch/next-action.md"),
       mermaid: await readTextIfExists(cwd, ".snitch/mermaid.mmd"),
       prComment: await readTextIfExists(cwd, ".snitch/pr-comment.md"),
@@ -4857,7 +4928,7 @@ async function writeReplayArtifacts(
 
 async function writeArtifacts(cwd: string, artifacts: SnitchArtifacts): Promise<void> {
   await Promise.all(
-    Object.entries(artifacts).map(([name, contents]) => writeText(cwd, `.snitch/${name}`, contents))
+    snitchArtifactNames.map((name) => writeText(cwd, artifactPath(name), artifacts[name]))
   );
 }
 
@@ -4884,16 +4955,7 @@ function createSession(input: {
     graphSource: input.graphSource,
     analysisTarget: input.analysisTarget,
     eventsPath: eventsFile,
-    artifacts: [
-      "graph.json",
-      "warnings.json",
-      "findings.json",
-      "next-action.md",
-      "timeline.jsonl",
-      "mermaid.mmd",
-      "handoff.md",
-      "pr-comment.md"
-    ]
+    artifacts: [...snitchArtifactNames]
   };
 }
 
@@ -5022,19 +5084,10 @@ alwaysApply: false
 
 Use Snitch when a task changes routes, tools, schemas, auth, permissions, external APIs, environment variables, database writes, tests, or agent-facing workflows.
 
-- Run \`pnpm snitch analyze --target . --task "<current task>"\` after meaningful implementation changes.
-- Run \`pnpm snitch doctor\` when you need to verify that Snitch is wired into this repo and coding-agent session.
-- Run \`pnpm snitch briefing --task "<current task>"\` when you need one compact agent handoff with status, intent, changed-surface findings, top action, and impact.
-- Run \`pnpm snitch verify-intent --task "<current task>"\` when you need to prove the graph covers the task the agent claims to have completed.
-- Run \`pnpm snitch check --target . --task "<current task>"\` before handing off risky changes.
-- Run \`pnpm snitch insights --offline\` when provider credentials are unavailable.
-- Run \`pnpm snitch next-action\` after Snitch captures a hook event to get the current grounded agent follow-up.
-- Run \`pnpm snitch trace --warning <id>\` when you need to connect a warning to safe hook events and graph timeline evidence.
-- Run \`pnpm snitch changed\` before handoff to focus warnings on the local Git changed surface.
-- Run \`pnpm snitch repair-prompt\` when warnings are active, then implement the returned agent prompt.
-- Run \`pnpm snitch verify-repair --warning <id> --target . --task "<current task>"\` after repairing a warning.
-- Run \`pnpm snitch finalize\` before preparing a pull request or handoff.
-- Treat \`.snitch/graph.json\`, \`.snitch/warnings.json\`, \`.snitch/findings.json\`, \`.snitch/next-action.md\`, \`.snitch/mermaid.mmd\`, \`.snitch/pr-comment.md\`, and \`.snitch/handoff.md\` as generated evidence.
+- Run \`pnpm snitch briefing --task "<current task>"\` first when you need the agent-facing state.
+- Run \`pnpm snitch check --target . --task "<current task>" --fail-on medium\` before handoff.
+- If Snitch reports a warning, run \`pnpm snitch repair-prompt --warning <id>\`, implement that prompt, then run \`pnpm snitch verify-repair --warning <id> --target . --task "<current task>"\`.
+- Treat \`.snitch/\` files as generated evidence.
 - Do not give the coding agent GitHub write access for Snitch publishing; publish artifacts through a separate workflow.
 `;
 }
@@ -5285,17 +5338,16 @@ async function readSession(cwd: string): Promise<SnitchSession> {
     ...(parsed.lastAnalyzedAt ? { lastAnalyzedAt: parsed.lastAnalyzedAt } : {}),
     ...(parsed.lastAnalysisError ? { lastAnalysisError: parsed.lastAnalysisError } : {}),
     eventsPath: eventsFile,
-    artifacts: parsed.artifacts ?? [
-      "graph.json",
-      "warnings.json",
-      "findings.json",
-      "next-action.md",
-      "timeline.jsonl",
-      "mermaid.mmd",
-      "handoff.md",
-      "pr-comment.md"
-    ]
+    artifacts: parsed.artifacts ?? [...snitchArtifactNames]
   };
+}
+
+function artifactPath(name: SnitchArtifactName): `.snitch/${SnitchArtifactName}` {
+  return `.snitch/${name}`;
+}
+
+function updatedArtifactsLine(): string {
+  return "- Updated: generated Snitch artifacts in .snitch/";
 }
 
 async function readEvents(cwd: string): Promise<SnitchEvent[]> {
@@ -5455,28 +5507,17 @@ function helpText(): string {
   return [
     "Snitch background companion",
     "",
-    "Commands:",
-    "  snitch init [--cwd <repo>] [--agent codex|cursor|claude|opencode|all] [--target <ts-repo>] [--task <task>]",
-    "  snitch event [--cwd <repo>] [--source <agent>] [--hook <hook>] < stdin-json",
-    "  snitch analyze [--cwd <output-repo>] [--target <ts-repo>] [--task <task>]",
-    "  snitch check [--cwd <output-repo>] [--target <ts-repo>] [--task <task>] [--fail-on info|low|medium|high] [--json]",
-    "  snitch watch [--cwd <repo>] [--target <ts-repo>] [--port <port>] [--interval <ms>] [--scan-interval <ms>] [--insights] [--no-files]",
-    "  snitch insights [--cwd <repo>] [--offline]",
-    "  snitch repair-prompt [--cwd <repo>] [--warning <id>] [--all]",
-    "  snitch status [--cwd <repo>] [--json]",
-    "  snitch doctor [--cwd <repo>] [--json]",
-    "  snitch briefing [--cwd <repo>] [--task <task>] [--target <ts-repo>] [--warning <id>] [--json]",
-    "  snitch verify-intent [--cwd <repo>] [--task <task>] [--json]",
-    "  snitch verify-repair [--cwd <repo>] --warning <id> [--target <ts-repo>] [--task <task>] [--json]",
-    "  snitch changed [--cwd <repo>] [--target <ts-repo>] [--json]",
-    "  snitch trace [--cwd <repo>] [--warning <id>] [--json]",
-    "  snitch impact [--cwd <repo>] [--warning <id>] [--json]",
-    "  snitch findings [--cwd <repo>] [--json]",
-    "  snitch next-action [--cwd <repo>] [--json]",
-    "  snitch mcp [--cwd <repo>]",
-    "  snitch finalize [--cwd <repo>]",
-    "  snitch install-git-hooks [--cwd <repo>] [--force]",
-    "  snitch publish-github [--cwd <repo>] [--repo owner/name] [--pr <number>] [--token <token>]"
+    "Daily path:",
+    "  snitch init --agent codex --target . --task \"<task>\"",
+    "  snitch watch --target .",
+    "  snitch briefing --task \"<task>\"",
+    "  snitch check --target . --task \"<task>\" --fail-on medium",
+    "",
+    "When Snitch reports a warning:",
+    "  snitch repair-prompt --warning <id>",
+    "  snitch verify-repair --warning <id> --target . --task \"<task>\"",
+    "",
+    "Agent/runtime commands: event, mcp, doctor, status, changed, trace, impact, findings, next-action, insights, finalize, install-git-hooks, publish-github."
   ].join("\n") + "\n";
 }
 

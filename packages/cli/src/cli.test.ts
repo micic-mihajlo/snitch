@@ -38,6 +38,12 @@ describe("snitch cli", () => {
     await expect(readFile(join(cwd, ".snitch/handoff.md"), "utf8")).resolves.toContain(
       "Wire an issue tool"
     );
+    await expect(readFile(join(cwd, ".snitch/briefing.md"), "utf8")).resolves.toContain(
+      "Snitch briefing"
+    );
+    await expect(readFile(join(cwd, ".snitch/briefing.json"), "utf8")).resolves.toContain(
+      "\"task\": \"Wire an issue tool\""
+    );
     await expect(readFile(join(cwd, ".snitch/hooks/codex-hook.mjs"), "utf8")).resolves.toContain(
       "pnpm"
     );
@@ -94,9 +100,6 @@ describe("snitch cli", () => {
     );
     await expect(readFile(join(cwd, ".cursor/rules/snitch.mdc"), "utf8")).resolves.toContain(
       "pnpm snitch repair-prompt"
-    );
-    await expect(readFile(join(cwd, ".cursor/rules/snitch.mdc"), "utf8")).resolves.toContain(
-      "pnpm snitch next-action"
     );
     await expect(readFile(join(cwd, ".claude/settings.local.json"), "utf8")).resolves.toContain(
       "SNITCH_SOURCE=claude"
@@ -180,6 +183,9 @@ describe("snitch cli", () => {
     await expect(readFile(join(cwd, ".snitch/next-action.md"), "utf8")).resolves.toContain(
       "Snitch Next Action"
     );
+    await expect(readFile(join(cwd, ".snitch/briefing.md"), "utf8")).resolves.toContain(
+      "Snitch briefing"
+    );
   });
 
   it("refreshes the graph from the TypeScript target after a file-changing hook", async () => {
@@ -206,6 +212,9 @@ describe("snitch cli", () => {
     );
     await expect(readFile(join(cwd, ".snitch/pr-comment.md"), "utf8")).resolves.toContain(
       "No audit trail for external tool calls"
+    );
+    await expect(readFile(join(cwd, ".snitch/briefing.json"), "utf8")).resolves.toContain(
+      "warning:tool_audit_log_missing:create_issue"
     );
 
     const promptResult = await runCli(["event", "--source", "codex", "--hook", "UserPromptSubmit"], {
@@ -1200,6 +1209,9 @@ describe("snitch cli", () => {
     await expect(readFile(join(cwd, ".snitch/next-action.md"), "utf8")).resolves.toContain(
       "Snitch Next Action"
     );
+    await expect(readFile(join(cwd, ".snitch/briefing.md"), "utf8")).resolves.toContain(
+      "Snitch briefing"
+    );
 
     const status = await runCli(["status", "--json"], { cwd });
     const parsedStatus = JSON.parse(status.stdout);
@@ -1208,6 +1220,8 @@ describe("snitch cli", () => {
     expect(parsedStatus.session.status).toBe("initialized");
     expect(parsedStatus.session.lastAnalyzedAt).toBeTruthy();
     expect(parsedStatus.counts.warnings).toBe(4);
+    expect(parsedStatus.artifacts.briefing.available).toBe(true);
+    expect(parsedStatus.artifacts.briefingJson.available).toBe(true);
   });
 
   it("fails check when warnings meet the severity threshold", async () => {
@@ -1364,6 +1378,9 @@ describe("snitch cli", () => {
     expect(repairedParsed.nextCommands).toContain(
       "pnpm snitch verify-intent --task 'Wire an issue tool' --json"
     );
+    await expect(readFile(join(cwd, ".snitch/briefing.json"), "utf8")).resolves.toContain(
+      "\"status\": \"clear\""
+    );
     expect(human.code).toBe(0);
     expect(human.stdout).toContain("Snitch repair verified.");
   });
@@ -1384,6 +1401,8 @@ describe("snitch cli", () => {
       true
     );
     expect(state.events).toEqual([]);
+    expect(state.artifacts.briefing).toContain("Snitch briefing");
+    expect(state.artifacts.briefingJson).toContain("\"status\": \"action_required\"");
     expect(state.artifacts.mermaid).toContain("tool_create_issue");
     expect(state.artifacts.prComment).toContain("Snitch Review");
   });

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { buildSnitchArtifacts, getDemoReplay, getReviewSnapshot, hashEvidence } from "./index";
+import {
+  buildSnitchArtifacts,
+  getDemoReplay,
+  getReviewSnapshot,
+  hashEvidence,
+  snitchArtifactNames
+} from "./index";
 import type { GraphEdge, GraphNode, ReplaySnapshot, SnitchGraph } from "./types";
 
 describe("buildSnitchArtifacts", () => {
@@ -15,17 +21,7 @@ describe("buildSnitchArtifacts", () => {
         "Add an external issue-creation tool to this coding assistant. It should validate the request, call the issue provider, and expose the tool through the assistant's registry."
     });
 
-    expect(Object.keys(artifacts).sort()).toEqual([
-      "findings.json",
-      "graph.json",
-      "handoff.md",
-      "mermaid.mmd",
-      "next-action.md",
-      "pr-comment.md",
-      "session.json",
-      "timeline.jsonl",
-      "warnings.json"
-    ]);
+    expect(Object.keys(artifacts).sort()).toEqual([...snitchArtifactNames].sort());
     expect(JSON.parse(artifacts["session.json"]).runId).toBe("snitch-demo");
     expect(JSON.parse(artifacts["graph.json"]).nodes).toHaveLength(
       reviewSnapshot.graph.nodes.length
@@ -34,6 +30,16 @@ describe("buildSnitchArtifacts", () => {
     expect(JSON.parse(artifacts["findings.json"])[0]).toMatchObject({
       warningId: "warning:tool_audit_log_missing:create_issue"
     });
+    expect(JSON.parse(artifacts["briefing.json"])).toMatchObject({
+      status: "action_required",
+      action: {
+        topFinding: {
+          warningId: "warning:tool_audit_log_missing:create_issue"
+        }
+      }
+    });
+    expect(artifacts["briefing.md"]).toContain("Snitch briefing");
+    expect(artifacts["briefing.md"]).toContain("warning:tool_audit_log_missing:create_issue");
     expect(artifacts["timeline.jsonl"].split("\n")).toHaveLength(replay.length);
     expect(artifacts["mermaid.mmd"]).toContain("tool_create_issue");
     expect(artifacts["handoff.md"]).toContain("## Active warnings");
@@ -100,6 +106,13 @@ describe("buildSnitchArtifacts", () => {
     expect(artifacts["pr-comment.md"]).toContain("- Data stores: Invoice prisma write");
     expect(artifacts["pr-comment.md"]).toContain("- Active warnings: none");
     expect(artifacts["pr-comment.md"]).not.toContain("issue-creation capability");
+    expect(JSON.parse(artifacts["briefing.json"])).toMatchObject({
+      status: "clear",
+      counts: {
+        warnings: 0
+      }
+    });
+    expect(artifacts["briefing.md"]).toContain("- Status: clear");
   });
 });
 
