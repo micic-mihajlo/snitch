@@ -171,7 +171,7 @@ export function GraphCanvas({ graph, selectedNodeId, onSelectNode, cwd }: Props)
         onNodeMouseEnter={(_event, node) => setHoveredId(node.id)}
         onNodeMouseLeave={() => setHoveredId(undefined)}
       >
-        <Background gap={24} color="rgba(242, 238, 230, 0.06)" />
+        <Background gap={24} color="rgba(24, 24, 22, 0.07)" />
         <Controls showInteractive={false} />
       </ReactFlow>
     </div>
