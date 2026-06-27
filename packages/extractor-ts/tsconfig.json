@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@snitch/graph": ["../graph/src/index.ts"]
+    }
+  },
+  "include": ["src/**/*.ts"]
+}

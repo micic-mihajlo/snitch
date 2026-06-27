@@ -1,11 +1,12 @@
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { runCli } from "./cli";
 
 const tempDirs: string[] = [];
 const now = new Date("2026-06-27T12:00:00.000Z");
+const demoRoot = resolve(import.meta.dirname, "../../../apps/demo-app");
 
 describe("snitch cli", () => {
   afterEach(async () => {
@@ -33,6 +34,28 @@ describe("snitch cli", () => {
 
     const hookStats = await stat(join(cwd, ".snitch/hooks/codex-hook.mjs"));
     expect(hookStats.mode & 0o111).toBeGreaterThan(0);
+  });
+
+  it("can generate Codex, Claude, and OpenCode background adapter configs", async () => {
+    const cwd = await tempRepo();
+    const result = await runCli(["init", "--agent", "all", "--task", "Wire an issue tool"], {
+      cwd,
+      now
+    });
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain(".codex/hooks.json");
+    expect(result.stdout).toContain(".claude/settings.local.json");
+    expect(result.stdout).toContain(".opencode/snitch-plugin.ts");
+    await expect(readFile(join(cwd, ".codex/hooks.json"), "utf8")).resolves.toContain(
+      "PostToolUse"
+    );
+    await expect(readFile(join(cwd, ".claude/settings.local.json"), "utf8")).resolves.toContain(
+      "SNITCH_SOURCE=claude"
+    );
+    await expect(readFile(join(cwd, ".opencode/snitch-plugin.ts"), "utf8")).resolves.toContain(
+      "tool.execute.after"
+    );
   });
 
   it("records hook events without storing the raw payload", async () => {
@@ -73,6 +96,23 @@ describe("snitch cli", () => {
     expect(result.code).toBe(0);
     expect(result.stdout).toContain("Snitch background companion");
     expect(result.stdout).toContain("node .snitch/hooks/codex-hook.mjs");
+  });
+
+  it("analyzes a TypeScript target into Snitch artifacts", async () => {
+    const cwd = await tempRepo();
+    const result = await runCli(["analyze", "--target", demoRoot, "--task", "Wire an issue tool"], {
+      cwd,
+      now
+    });
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("Nodes: 10");
+    await expect(readFile(join(cwd, ".snitch/graph.json"), "utf8")).resolves.toContain(
+      "api.github.com API"
+    );
+    await expect(readFile(join(cwd, ".snitch/pr-comment.md"), "utf8")).resolves.toContain(
+      "No audit trail for external tool calls"
+    );
   });
 
   it("finalizes PR-ready artifacts from the background session", async () => {

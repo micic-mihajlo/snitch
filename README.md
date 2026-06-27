@@ -10,7 +10,11 @@ This repo now includes a working first slice:
 
 - background CLI: `pnpm snitch init`, `event`, `status`, and `finalize`
 - generated hook adapter at `.snitch/hooks/codex-hook.mjs`
+- generated Codex, Claude Code, and OpenCode adapter configs with `--agent all`
 - privacy-preserving local event log at `.snitch/events.jsonl`
+- normalized event model with payload hashing and safe summaries
+- narrow TypeScript extractor for real repo graph generation
+- prepared demo assistant app under `apps/demo-app`
 - deterministic graph IR, hashing, diffing, and last-good-graph behavior
 - replayed issue-tool demo graph with missing companion warnings
 - Mermaid, handoff, timeline, graph JSON, and PR-comment artifact generation
@@ -23,23 +27,26 @@ See [docs/strategy-2026-06-27.md](docs/strategy-2026-06-27.md) for the researche
 
 ```bash
 pnpm install
-pnpm snitch init --task "Add an external issue-creation tool to this coding assistant"
+pnpm snitch init --agent all --task "Add an external issue-creation tool to this coding assistant"
+pnpm snitch analyze --target apps/demo-app --task "Add an external issue-creation tool to this coding assistant"
 pnpm dev
 ```
 
-`pnpm snitch init` creates the local background state and hook adapter. The dashboard runs through `apps/web` and opens a local Vite server. The first screen is the Snitch inspection surface: live graph, warning rail, timeline, sponsor lane, and PR artifact preview.
+`pnpm snitch init` creates the local background state and hook adapters. `pnpm snitch analyze` runs the TypeScript extractor against the demo app and writes `.snitch` graph, Mermaid, handoff, and PR artifacts. The dashboard runs through `apps/web` and opens a local Vite server. The first screen is the Snitch inspection surface: live graph, warning rail, timeline, sponsor lane, and PR artifact preview.
 
 Useful commands:
 
 ```bash
-pnpm snitch init --task "Watch this coding-agent session"
+pnpm snitch init --agent all --task "Watch this coding-agent session"
 printf '{"tool_name":"apply_patch","file_path":"src/tools/issues.ts"}' | pnpm snitch event --source codex --hook PostToolUse
+pnpm snitch analyze --target apps/demo-app --task "Add an external issue-creation tool"
 pnpm snitch status
 pnpm snitch finalize
 pnpm test
 pnpm build
 pnpm verify:browser
 pnpm demo:artifacts
+pnpm demo:extract
 pnpm smoke:cerebras
 pnpm smoke:backboard
 ```
@@ -50,7 +57,14 @@ Local credentials live in `.env`; `.env.example` lists the supported keys. `CERE
 
 Snitch follows the Flow Guardian pattern: small local config, durable handoff state, no GitHub write powers inside the agent loop.
 
-After `pnpm snitch init`, point the coding agent at:
+After `pnpm snitch init --agent all`, Snitch writes:
+
+- `.codex/hooks.json`
+- `.claude/settings.local.json`
+- `.opencode/snitch-plugin.ts`
+- `.snitch/hooks/codex-hook.mjs`
+
+The generated hook command is:
 
 ```bash
 node .snitch/hooks/codex-hook.mjs <hook-name>
@@ -69,6 +83,14 @@ It does not store the raw hook payload. Each event advances the demo graph seque
 - `.snitch/mermaid.mmd`
 - `.snitch/handoff.md`
 - `.snitch/pr-comment.md`
+
+For code-derived artifacts, run:
+
+```bash
+pnpm snitch analyze --target apps/demo-app --task "Add an external issue-creation tool"
+```
+
+The current extractor recognizes the demo assistant router, tool registry, `create_issue` tool, input schema, provider `fetch`, provider credential, and missing audit/redaction/permission/test companions.
 
 ## Demo Thesis
 
