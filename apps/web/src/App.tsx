@@ -1,6 +1,13 @@
 import { RotateCcw, StepForward } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { buildSnitchArtifacts, createStaticNarration, diffGraph, type SnitchWarning } from "@snitch/graph";
+import {
+  buildSnitchArtifacts,
+  createStaticNarration,
+  diffGraph,
+  type GraphEdge,
+  type GraphNode,
+  type SnitchWarning
+} from "@snitch/graph";
 import { ArtifactPanel } from "./components/ArtifactPanel";
 import { GraphCanvas } from "./components/GraphCanvas";
 import { IntegrationPanel } from "./components/IntegrationPanel";
@@ -18,6 +25,7 @@ export default function App() {
   const live = useLiveSnitch();
   const [createdAt] = useState(() => new Date().toISOString());
   const [graphScope, setGraphScope] = useState<GraphScope>("all");
+  const [selectedNodeId, setSelectedNodeId] = useState<string | undefined>(undefined);
   const currentSnapshot = live.snapshot ?? replay.currentSnapshot;
   const previousSnapshot = live.previousSnapshot ?? replay.previousSnapshot;
   const visibleSnapshots = live.snapshot ? [currentSnapshot] : replay.snapshots;
@@ -36,6 +44,15 @@ export default function App() {
   const selectedWarning =
     rankedWarnings.find((warning) => warning.id === selectedWarningId) ??
     rankedWarnings[0];
+  const nodeById = useMemo(
+    () => new Map(currentSnapshot.graph.nodes.map((node) => [node.id, node])),
+    [currentSnapshot.graph.nodes]
+  );
+  const selectedNode = selectedNodeId ? nodeById.get(selectedNodeId) : undefined;
+  const selectedNodeEdges = useMemo(
+    () => edgesForNode(currentSnapshot.graph.edges, selectedNode?.id),
+    [currentSnapshot.graph.edges, selectedNode?.id]
+  );
   const diff = useMemo(
     () => diffGraph(previousSnapshot.graph, currentSnapshot.graph),
     [currentSnapshot, previousSnapshot]
@@ -67,12 +84,27 @@ export default function App() {
     () => scopeGraph(currentSnapshot.graph, diff, graphScope, selectedWarning?.id),
     [currentSnapshot.graph, diff, graphScope, selectedWarning?.id]
   );
+  const scopedNodeIds = useMemo(
+    () => new Set(scopedGraph.nodes.map((node) => node.id)),
+    [scopedGraph.nodes]
+  );
+  const focusedNodeId = selectedNode && scopedNodeIds.has(selectedNode.id)
+    ? selectedNode.id
+    : selectedWarning && scopedNodeIds.has(selectedWarning.id)
+      ? selectedWarning.id
+      : undefined;
 
   useEffect(() => {
     if (!rankedWarnings.some((warning) => warning.id === selectedWarningId)) {
       setSelectedWarningId(rankedWarnings[0]?.id);
     }
   }, [rankedWarnings, selectedWarningId]);
+
+  useEffect(() => {
+    if (!selectedNodeId || !nodeById.has(selectedNodeId)) {
+      setSelectedNodeId(selectedWarning?.id);
+    }
+  }, [nodeById, selectedNodeId, selectedWarning?.id]);
 
   function handleNext() {
     if (live.status === "live") {
@@ -81,6 +113,7 @@ export default function App() {
 
     const nextSnapshot = replay.advance();
     setSelectedWarningId(nextSnapshot.warnings[0]?.id);
+    setSelectedNodeId(nextSnapshot.warnings[0]?.id);
   }
 
   function handleReset() {
@@ -90,6 +123,12 @@ export default function App() {
 
     const resetSnapshot = replay.reset();
     setSelectedWarningId(resetSnapshot.warnings[0]?.id);
+    setSelectedNodeId(resetSnapshot.warnings[0]?.id);
+  }
+
+  function handleSelectWarning(warning: SnitchWarning) {
+    setSelectedWarningId(warning.id);
+    setSelectedNodeId(warning.id);
   }
 
   return (
@@ -154,14 +193,25 @@ export default function App() {
               </output>
             </div>
           </div>
-          <GraphCanvas graph={scopedGraph} />
+          <GraphCanvas
+            graph={scopedGraph}
+            selectedNodeId={focusedNodeId}
+            onSelectNode={(node) => setSelectedNodeId(node.id)}
+            cwd={live.cwd}
+          />
+          <GraphSelectionStrip
+            node={selectedNode}
+            edges={selectedNodeEdges}
+            fallbackWarning={selectedWarning}
+            cwd={live.cwd}
+          />
         </section>
 
         <WarningRail
           warnings={rankedWarnings}
           selectedWarning={selectedWarning}
           rankingByWarningId={rankingByWarningId}
-          onSelect={(warning) => setSelectedWarningId(warning.id)}
+          onSelect={handleSelectWarning}
         />
       </section>
 
@@ -181,6 +231,82 @@ export default function App() {
       </section>
     </main>
   );
+}
+
+function edgesForNode(edges: GraphEdge[], nodeId: string | undefined): GraphEdge[] {
+  if (!nodeId) {
+    return [];
+  }
+
+  return edges.filter((edge) => edge.from === nodeId || edge.to === nodeId);
+}
+
+function GraphSelectionStrip({
+  node,
+  edges,
+  fallbackWarning,
+  cwd
+}: {
+  node: GraphNode | undefined;
+  edges: GraphEdge[];
+  fallbackWarning: SnitchWarning | undefined;
+  cwd: string | undefined;
+}) {
+  if (!node && !fallbackWarning) {
+    return (
+      <div className="map-selection-strip">
+        <span className="selection-kicker">Focus</span>
+        <span className="selection-title">No graph focus in this snapshot.</span>
+      </div>
+    );
+  }
+
+  if (!node && fallbackWarning) {
+    return (
+      <div className="map-selection-strip">
+        <span className="selection-kicker">Warning</span>
+        <span className="selection-title">{fallbackWarning.title}</span>
+        <span className="selection-meta">{fallbackWarning.severity}</span>
+      </div>
+    );
+  }
+
+  if (!node) {
+    return null;
+  }
+
+  const href = editorHref(cwd, node.file, node.line);
+
+  return (
+    <div className="map-selection-strip" aria-label="Selected graph node">
+      <span className="selection-kicker">{kindLabel(node.kind)}</span>
+      <span className="selection-title">{node.label}</span>
+      {href && node.file ? (
+        <a className="selection-file" href={href}>
+          {node.file}
+          {node.line ? `:${node.line}` : ""}
+        </a>
+      ) : node.file ? (
+        <span className="selection-file">
+          {node.file}
+          {node.line ? `:${node.line}` : ""}
+        </span>
+      ) : null}
+      <span className="selection-meta">{edges.length} links</span>
+    </div>
+  );
+}
+
+function kindLabel(kind: GraphNode["kind"]): string {
+  return kind === "endpoint" ? "route" : kind;
+}
+
+function editorHref(cwd: string | undefined, file: string | undefined, line: number | undefined): string | undefined {
+  if (!cwd || !file) {
+    return undefined;
+  }
+
+  return `vscode://file/${cwd.replace(/\/$/, "")}/${file}${typeof line === "number" ? `:${line}` : ""}`;
 }
 
 function capitalize(value: string): string {

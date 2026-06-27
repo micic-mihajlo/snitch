@@ -9,6 +9,7 @@
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
     "snitch": "tsx packages/cli/src/main.ts",
+    "install:cli": "node scripts/install-cli.mjs",
     "dev": "pnpm --filter @snitch/web dev",
     "dev:live": "VITE_SNITCH_LIVE_URL=http://127.0.0.1:4767 pnpm --filter @snitch/web dev",
     "demo:live": "tsx scripts/run-live-demo.ts",

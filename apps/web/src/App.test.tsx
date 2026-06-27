@@ -1,4 +1,4 @@
-import { act, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildSnitchArtifacts, getDemoReplay, getReviewSnapshot, type ReplaySnapshot } from "@snitch/graph";
@@ -39,6 +39,20 @@ describe("Snitch dashboard", () => {
         /Add an audit log write around create_issue calls/i
       )
     ).toBeInTheDocument();
+    expect(screen.getByLabelText("Selected graph node")).toHaveTextContent(
+      "No audit trail for external tool calls"
+    );
+  });
+
+  it("keeps warning rail selection and graph focus together", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: /No per-session permission boundary/i }));
+
+    expect(screen.getByLabelText("Selected graph node")).toHaveTextContent(
+      "No per-session permission boundary"
+    );
   });
 
   it("advances replay without blanking the graph", async () => {
@@ -68,7 +82,7 @@ describe("Snitch dashboard", () => {
 
   it("switches from replay fallback to live Snitch artifacts", async () => {
     const replay = getDemoReplay();
-    const snapshot = getReviewSnapshot(replay);
+    const snapshot = withToolAnchor(getReviewSnapshot(replay));
     const artifacts = buildSnitchArtifacts({
       replay: [snapshot],
       reviewSnapshot: snapshot,
@@ -160,6 +174,13 @@ describe("Snitch dashboard", () => {
     expect(screen.getByText("ok / 2 repo rules")).toBeInTheDocument();
     expect(screen.getByText(/memory: ok \/ 2 memories/)).toBeInTheDocument();
     expect(screen.getByText(/Cerebras says the issue tool/i)).toBeInTheDocument();
+
+    fireEvent.click(within(screen.getByTestId("graph-frame")).getByText("Create issue tool"));
+    const selectedNode = screen.getByLabelText("Selected graph node");
+    expect(selectedNode).toHaveTextContent("Create issue tool");
+    expect(
+      within(selectedNode).getByRole("link", { name: "src/assistant/tools.ts:42" })
+    ).toHaveAttribute("href", "vscode://file//tmp/snitch-live/src/assistant/tools.ts:42");
   });
 
   it("updates live Snitch artifacts from server-sent state events", async () => {
@@ -256,6 +277,24 @@ function liveApiStateFor(snapshot: ReplaySnapshot, eventCount: number) {
       prComment: artifacts["pr-comment.md"],
       handoff: artifacts["handoff.md"],
       timeline: artifacts["timeline.jsonl"]
+    }
+  };
+}
+
+function withToolAnchor(snapshot: ReplaySnapshot): ReplaySnapshot {
+  return {
+    ...snapshot,
+    graph: {
+      ...snapshot.graph,
+      nodes: snapshot.graph.nodes.map((node) =>
+        node.id === "tool:create_issue"
+          ? {
+              ...node,
+              file: "src/assistant/tools.ts",
+              line: 42
+            }
+          : node
+      )
     }
   };
 }
