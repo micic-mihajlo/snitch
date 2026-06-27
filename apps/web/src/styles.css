@@ -202,6 +202,25 @@ h2 {
   stroke: var(--cyan);
 }
 
+.react-flow__controls {
+  border: 1px solid var(--line);
+  box-shadow: none;
+}
+
+.react-flow__controls-button {
+  border-bottom: 1px solid var(--line);
+  color: var(--paper);
+  background: #151411;
+}
+
+.react-flow__controls-button svg {
+  fill: currentColor;
+}
+
+.react-flow__controls-button:hover {
+  background: #25231e;
+}
+
 .warning-list {
   display: grid;
   gap: 8px;

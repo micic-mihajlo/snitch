@@ -239,7 +239,7 @@ Commit message: `feat: add live dashboard`
 - Modify: `README.md`
 - Modify: `docs/prd.md` only if implementation reality requires a clarification
 
-- [ ] **Step 1: Update README commands**
+- [x] **Step 1: Update README commands**
 
 Document:
 - `pnpm install`
@@ -250,7 +250,7 @@ Document:
 - `pnpm smoke:cerebras`
 - `pnpm smoke:backboard`
 
-- [ ] **Step 2: Run full verification**
+- [x] **Step 2: Run full verification**
 
 Run:
 - `pnpm test`
@@ -259,7 +259,7 @@ Run:
 - `pnpm smoke:cerebras`
 - `pnpm smoke:backboard`
 
-- [ ] **Step 3: Browser verification**
+- [x] **Step 3: Browser verification**
 
 Start the dev server and verify:
 - desktop viewport shows nonblank graph
@@ -267,7 +267,7 @@ Start the dev server and verify:
 - replay button advances graph
 - Mermaid/PR artifact panel is visible
 
-- [ ] **Step 4: Final review and commit**
+- [x] **Step 4: Final review and commit**
 
 Run a final self-review of the outgoing diff.
 

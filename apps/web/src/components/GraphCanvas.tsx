@@ -1,4 +1,4 @@
-import { Background, Controls, MiniMap, ReactFlow, type Edge, type Node } from "@xyflow/react";
+import { Background, Controls, ReactFlow, type Edge, type Node } from "@xyflow/react";
 import type { GraphNode, SnitchGraph } from "@snitch/graph";
 
 type Props = {
@@ -40,7 +40,6 @@ export function GraphCanvas({ graph }: Props) {
         proOptions={{ hideAttribution: true }}
       >
         <Background gap={24} color="rgba(242, 238, 230, 0.08)" />
-        <MiniMap pannable zoomable nodeStrokeWidth={2} />
         <Controls showInteractive={false} />
       </ReactFlow>
     </div>

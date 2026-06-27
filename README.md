@@ -4,6 +4,37 @@ Live visual truth for AI coding agents.
 
 Snitch watches a repo while an AI coding agent changes it, derives the system shape from the code, and renders the changes immediately as diagrams, timelines, and warnings. The demo should feel like the codebase is becoming visible at machine speed.
 
+## Current MVP
+
+This repo now includes a working first slice:
+
+- deterministic graph IR, hashing, diffing, and last-good-graph behavior
+- replayed issue-tool demo graph with missing companion warnings
+- Mermaid, handoff, timeline, graph JSON, and PR-comment artifact generation
+- Cerebras and Backboard sponsor lanes with graceful fallback behavior
+- Vite/React dashboard using React Flow for the live graph surface
+
+## Run It
+
+```bash
+pnpm install
+pnpm dev
+```
+
+The dashboard runs through `apps/web` and opens a local Vite server. The first screen is the Snitch tool surface: live graph, warning rail, timeline, sponsor lane, and PR artifact preview.
+
+Useful commands:
+
+```bash
+pnpm test
+pnpm build
+pnpm demo:artifacts
+pnpm smoke:cerebras
+pnpm smoke:backboard
+```
+
+Local credentials live in `.env`; `.env.example` lists the supported keys. `CEREBRAS_MODEL` can be a public model ID such as `gpt-oss-120b` or an org dedicated endpoint ID when available.
+
 ## Demo Thesis
 
 The wow is not "AI generated docs." The wow is:
@@ -290,13 +321,9 @@ Research only the decisions that affect the first build.
    - GitHub `pull_request` workflow for PR artifact publishing
    - local `.snitch/` state inspired by Flow Guardian handoff files
 
-## Immediate Next Step
+## Next Build Targets
 
-Run a short research pass on the rendering and extraction stack, then choose the smallest stack that can produce:
-
-1. a smooth HTML graph,
-2. a generated Mermaid diagram,
-3. a replayable demo sequence,
-4. a fast Cerebras narration loop.
-
-After that, scaffold only the pieces needed for the latency spike.
+1. Add a real file watcher and `snitchd` event stream.
+2. Add a narrow TypeScript extractor for the prepared demo app.
+3. Wire one agent runtime hook path.
+4. Add a GitHub Action template that posts `.snitch/pr-comment.md`.
