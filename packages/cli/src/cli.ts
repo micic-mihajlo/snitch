@@ -89,6 +89,17 @@ type AnalysisWriteResult = {
   analyzedAt: string;
 };
 
+type TimelineEntry = {
+  snapshotId: string;
+  title: string;
+  description: string;
+  warningCount: number;
+  diffSummary: ReturnType<typeof diffGraph>["summary"];
+  generatedAt?: string;
+  source?: string;
+  previousSnapshotId?: string;
+};
+
 type EventGraphUpdate =
   | {
       graphSource: "typescript";
@@ -714,7 +725,8 @@ export async function refreshWatchedTarget(
       target,
       task: session.task,
       now: input.now,
-      runId: session.runId
+      runId: session.runId,
+      appendTimeline: true
     });
     const updatedSession: SnitchSession = {
       ...session,
@@ -1343,6 +1355,20 @@ async function readTextIfExists(cwd: string, path: string): Promise<string> {
   }
 }
 
+async function readGraphIfExists(cwd: string): Promise<SnitchGraph | undefined> {
+  const graphText = await readTextIfExists(cwd, ".snitch/graph.json");
+
+  if (!graphText.trim()) {
+    return undefined;
+  }
+
+  try {
+    return JSON.parse(graphText) as SnitchGraph;
+  } catch {
+    return undefined;
+  }
+}
+
 async function readAbsoluteTextIfExists(path: string): Promise<string> {
   try {
     return await readFile(path, "utf8");
@@ -1461,7 +1487,8 @@ async function updateGraphForEvent(
         target,
         task: input.session.task,
         now: input.now,
-        runId: input.session.runId
+        runId: input.session.runId,
+        appendTimeline: true
       });
 
       if (analysis.snapshot.graph.nodes.length > 0) {
@@ -1531,9 +1558,12 @@ async function writeTypeScriptArtifacts(
     task: string;
     now: Date;
     runId: string;
+    appendTimeline?: boolean;
   }
 ): Promise<AnalysisWriteResult> {
   const analyzedAt = input.now.toISOString();
+  const previousGraph = input.appendTimeline ? await readGraphIfExists(cwd) : undefined;
+  const previousTimeline = input.appendTimeline ? await readTextIfExists(cwd, ".snitch/timeline.jsonl") : "";
   const extracted = extractTypeScriptGraph({
     cwd: input.target,
     title: `Extracted graph for ${basename(input.target) || "repo"}`,
@@ -1550,12 +1580,62 @@ async function writeTypeScriptArtifacts(
 
   await writeArtifacts(cwd, artifacts);
 
+  if (input.appendTimeline) {
+    await writeText(
+      cwd,
+      ".snitch/timeline.jsonl",
+      appendTimelineEntry(previousTimeline, createLiveTimelineEntry({
+        snapshot: extracted.snapshot,
+        previousGraph,
+        generatedAt: analyzedAt,
+        source: "snitch-ts-extractor"
+      }))
+    );
+  }
+
   return {
     snapshot: extracted.snapshot,
     graphSource: "typescript",
     target: storeTargetPath(cwd, input.target),
     analyzedAt
   };
+}
+
+function createLiveTimelineEntry(input: {
+  snapshot: ReplaySnapshot;
+  previousGraph: SnitchGraph | undefined;
+  generatedAt: string;
+  source: string;
+}): string {
+  const diff = input.previousGraph ? diffGraph(input.previousGraph, input.snapshot.graph) : undefined;
+  const entry: TimelineEntry = {
+    snapshotId: input.snapshot.id,
+    title: input.snapshot.title,
+    description: input.snapshot.description,
+    warningCount: input.snapshot.warnings.length,
+    diffSummary: diff?.summary ?? {
+      addedNodes: input.snapshot.graph.nodes.length,
+      removedNodes: 0,
+      changedNodes: 0,
+      addedEdges: input.snapshot.graph.edges.length,
+      removedEdges: 0,
+      changedEdges: 0
+    },
+    generatedAt: input.generatedAt,
+    source: input.source
+  };
+
+  if (input.previousGraph) {
+    entry.previousSnapshotId = input.previousGraph.id;
+  }
+
+  return JSON.stringify(entry);
+}
+
+function appendTimelineEntry(existingTimeline: string, entry: string): string {
+  const trimmed = existingTimeline.trimEnd();
+
+  return trimmed ? `${trimmed}\n${entry}\n` : `${entry}\n`;
 }
 
 async function persistAnalysisTarget(

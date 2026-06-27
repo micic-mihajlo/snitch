@@ -258,6 +258,22 @@ describe("snitch cli", () => {
       now: new Date("2026-06-27T12:04:00.000Z")
     });
     const state = await readLiveState(cwd);
+    const timelineEntries = (await readFile(join(cwd, ".snitch/timeline.jsonl"), "utf8"))
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as {
+        snapshotId: string;
+        previousSnapshotId?: string;
+        generatedAt?: string;
+        source?: string;
+        diffSummary: {
+          addedNodes: number;
+          removedNodes: number;
+          addedEdges: number;
+          removedEdges: number;
+        };
+      });
+    const latestTimelineEntry = timelineEntries.at(-1);
 
     expect(result.status).toBe("updated");
     expect(state.graph.nodes.some((node) => node.id === "service:tool_audit_log")).toBe(true);
@@ -265,6 +281,19 @@ describe("snitch cli", () => {
     expect(state.session).toMatchObject({
       graphSource: "typescript",
       lastAnalyzedAt: "2026-06-27T12:04:00.000Z"
+    });
+    expect(timelineEntries.length).toBeGreaterThan(1);
+    expect(latestTimelineEntry).toMatchObject({
+      snapshotId: "extractor-ts",
+      previousSnapshotId: "extractor-ts",
+      generatedAt: "2026-06-27T12:04:00.000Z",
+      source: "snitch-ts-extractor"
+    });
+    expect(latestTimelineEntry?.diffSummary).toMatchObject({
+      addedNodes: 1,
+      removedNodes: 1,
+      addedEdges: 1,
+      removedEdges: 1
     });
   });
 
