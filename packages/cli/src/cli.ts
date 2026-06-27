@@ -1285,6 +1285,9 @@ function createStatusNextCommands(
   if (firstWarning) {
     commands.push(`pnpm snitch trace --warning ${firstWarning.id} --json`);
     commands.push(`pnpm snitch repair-prompt --warning ${firstWarning.id}`);
+    commands.push(
+      `pnpm snitch verify-repair --warning ${firstWarning.id} --target ${shellArgForPrompt(session.analysisTarget)} --task ${shellArgForPrompt(session.task)} --json`
+    );
   }
 
   commands.push("pnpm snitch finalize");
@@ -1878,6 +1881,9 @@ function createImpactNextCommands(
 
   if (warning) {
     commands.push(`pnpm snitch repair-prompt --warning ${warning.id}`);
+    commands.push(
+      `pnpm snitch verify-repair --warning ${warning.id} --target ${shellArgForPrompt(session.analysisTarget)} --task ${shellArgForPrompt(session.task)} --json`
+    );
   }
 
   commands.push(
@@ -2011,6 +2017,7 @@ async function readSnitchTracePayload(
     ? [
         `pnpm snitch repair-prompt --warning ${warning.id}`,
         `pnpm snitch impact --warning ${warning.id} --json`,
+        `pnpm snitch verify-repair --warning ${warning.id} --target ${shellArgForPrompt(session.analysisTarget)} --task ${shellArgForPrompt(session.task)} --json`,
         "pnpm snitch next-action --json",
         `pnpm snitch check --target ${shellArgForPrompt(session.analysisTarget)} --fail-on medium --json`
       ]
@@ -2562,6 +2569,7 @@ async function readSnitchNextActionPayload(cwd: string): Promise<SnitchNextActio
     ? [
         topFinding.repairCommand,
         `pnpm snitch impact --warning ${topFinding.warningId} --json`,
+        `pnpm snitch verify-repair --warning ${topFinding.warningId} --target ${shellArgForPrompt(target)} --task ${shellArgForPrompt(session.task)} --json`,
         `pnpm snitch check --target ${shellArgForPrompt(target)} --fail-on medium --json`
       ]
     : [
@@ -2582,7 +2590,7 @@ async function readSnitchNextActionPayload(cwd: string): Promise<SnitchNextActio
     },
     relatedEvents,
     agentInstruction: topFinding
-      ? `Address ${topFinding.warningId} before continuing broad implementation. Run ${topFinding.repairCommand}, add the missing companion work, then rerun Snitch check.`
+      ? `Address ${topFinding.warningId} before continuing broad implementation. Run ${topFinding.repairCommand}, add the missing companion work, then verify it with pnpm snitch verify-repair --warning ${topFinding.warningId}.`
       : "No active Snitch findings. Continue implementation and run Snitch check before handoff.",
     nextCommands
   };

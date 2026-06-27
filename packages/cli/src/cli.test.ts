@@ -314,6 +314,9 @@ describe("snitch cli", () => {
     expect(
       parsed.nextCommands.some((command: string) => command.startsWith("pnpm snitch trace --warning "))
     ).toBe(true);
+    expect(
+      parsed.nextCommands.some((command: string) => command.startsWith("pnpm snitch verify-repair --warning "))
+    ).toBe(true);
     expect(parsed.nextCommands).toContain(
       `pnpm snitch check --target '${demoRoot}' --fail-on medium --json`
     );
@@ -543,6 +546,9 @@ describe("snitch cli", () => {
     expect(parsed.nextCommands[0]).toBe(
       "pnpm snitch repair-prompt --warning warning:secret_redaction_missing:create_issue"
     );
+    expect(parsed.nextCommands).toContain(
+      `pnpm snitch verify-repair --warning warning:secret_redaction_missing:create_issue --target '${demoRoot}' --task 'Wire an issue tool' --json`
+    );
 
     const human = await runCli(
       ["impact", "--warning", "warning:secret_redaction_missing:create_issue"],
@@ -663,6 +669,9 @@ describe("snitch cli", () => {
     expect(parsed.impact.files).toContain("src/tools/create-issue.ts");
     expect(parsed.nextCommands[0]).toBe(
       "pnpm snitch repair-prompt --warning warning:tool_audit_log_missing:create_issue"
+    );
+    expect(parsed.nextCommands).toContain(
+      `pnpm snitch verify-repair --warning warning:tool_audit_log_missing:create_issue --target '${demoRoot}' --task 'Wire an issue tool' --json`
     );
 
     const human = await runCli(
@@ -1014,6 +1023,9 @@ describe("snitch cli", () => {
     );
     expect(nextActionResult.result.structuredContent.nextCommands[0]).toContain(
       "pnpm snitch repair-prompt --warning"
+    );
+    expect(nextActionResult.result.structuredContent.nextCommands).toContain(
+      `pnpm snitch verify-repair --warning warning:tool_audit_log_missing:create_issue --target '${demoRoot}' --task 'Wire an issue tool' --json`
     );
     expect(traceResult.result.isError).toBe(false);
     expect(traceResult.result.structuredContent.status).toBe("traced");
