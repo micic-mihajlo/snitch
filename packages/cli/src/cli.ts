@@ -238,6 +238,26 @@ type SnitchNextActionPayload = {
   nextCommands: string[];
 };
 
+type SnitchTracePayload = {
+  ok: true;
+  cwd: string;
+  generatedAt: string;
+  status: "clear" | "traced";
+  task: string;
+  warning: SnitchImpactPayload["warning"];
+  finding?: SnitchFinding;
+  relatedEvents: SafeEventReference[];
+  timeline: TimelineEntry[];
+  impact: {
+    counts: SnitchImpactPayload["counts"];
+    files: string[];
+    nodes: SnitchImpactPayload["nodes"];
+    edges: SnitchImpactPayload["edges"];
+  };
+  summary: string[];
+  nextCommands: string[];
+};
+
 type SnitchImpactPayload = {
   ok: true;
   cwd: string;
@@ -422,6 +442,10 @@ export async function runCli(args: string[], options: RunCliOptions = {}): Promi
 
     if (command === "impact") {
       return ok(await readSnitchImpact(cwd, parsed.flags));
+    }
+
+    if (command === "trace") {
+      return ok(await readSnitchTrace(cwd, parsed.flags));
     }
 
     if (command === "findings") {
@@ -1009,6 +1033,7 @@ function createStatusNextCommands(
   const firstWarning = warnings[0];
 
   if (firstWarning) {
+    commands.push(`pnpm snitch trace --warning ${firstWarning.id} --json`);
     commands.push(`pnpm snitch repair-prompt --warning ${firstWarning.id}`);
   }
 
@@ -1177,6 +1202,207 @@ function formatNodeLocation(node: SnitchImpactPayload["nodes"][number]): string 
   }
 
   return typeof node.line === "number" ? ` at ${node.file}:${node.line}` : ` at ${node.file}`;
+}
+
+async function readSnitchTrace(cwd: string, flags: ParsedArgs["flags"]): Promise<string> {
+  const payload = await readSnitchTracePayload(cwd, flags);
+
+  if (flags.has("json")) {
+    return `${JSON.stringify(payload, null, 2)}\n`;
+  }
+
+  return formatSnitchTrace(payload);
+}
+
+async function readSnitchTracePayload(
+  cwd: string,
+  flags: ParsedArgs["flags"]
+): Promise<SnitchTracePayload> {
+  const session = await readSession(cwd);
+  const graph = await readGraphIfExists(cwd);
+
+  if (!graph) {
+    throw new Error("No Snitch graph found. Run `pnpm snitch analyze` or `pnpm snitch init` first.");
+  }
+
+  const warnings = warningsAtOrAboveThreshold(await readWarnings(cwd, graph), "info");
+  const requestedWarningFlag = flags.get("warning");
+  const requestedWarningId =
+    requestedWarningFlag && requestedWarningFlag !== true ? requestedWarningFlag : undefined;
+  const warning = selectImpactWarning(warnings, requestedWarningId);
+  const findings = buildSnitchFindings(graph, warnings);
+  const finding = warning
+    ? findings.find((item) => item.warningId === warning.id)
+    : undefined;
+  const scopedGraph = warning
+    ? scopeGraph(graph, diffGraph(graph, graph), "impacted", warning.id)
+    : graph;
+  const files = unique(
+    scopedGraph.nodes
+      .map((node) => node.file)
+      .filter((file): file is string => typeof file === "string" && file.length > 0)
+      .sort()
+  );
+  const nodes = scopedGraph.nodes.map((node) => ({
+    id: node.id,
+    kind: node.kind,
+    label: node.label,
+    ...(node.file ? { file: node.file } : {}),
+    ...(typeof node.line === "number" ? { line: node.line } : {})
+  }));
+  const edges = scopedGraph.edges.map((edge) => ({
+    id: edge.id,
+    from: edge.from,
+    to: edge.to,
+    kind: edge.kind,
+    ...(edge.label ? { label: edge.label } : {})
+  }));
+  const warningPayload = warning
+    ? {
+        id: warning.id,
+        severity: warning.severity,
+        title: warning.title,
+        message: warning.message,
+        evidence: warning.evidence,
+        repairCommand: `pnpm snitch repair-prompt --warning ${warning.id}`
+      }
+    : null;
+  const events = await readEvents(cwd);
+  const relatedEvents = finding
+    ? events.filter((event) => eventTouchesFinding(event, finding)).slice(-8).map(toSafeEventReference)
+    : [];
+  const timeline = (await readTimelineEntries(cwd)).slice(-8);
+  const nextCommands = warning
+    ? [
+        `pnpm snitch repair-prompt --warning ${warning.id}`,
+        `pnpm snitch impact --warning ${warning.id} --json`,
+        "pnpm snitch next-action --json",
+        `pnpm snitch check --target ${shellArgForPrompt(session.analysisTarget)} --fail-on medium --json`
+      ]
+    : [
+        `pnpm snitch check --target ${shellArgForPrompt(session.analysisTarget)} --fail-on medium --json`,
+        "pnpm snitch finalize"
+      ];
+  const payload: SnitchTracePayload = {
+    ok: true,
+    cwd,
+    generatedAt: new Date().toISOString(),
+    status: warning ? "traced" : "clear",
+    task: session.task,
+    warning: warningPayload,
+    relatedEvents,
+    timeline,
+    impact: {
+      counts: {
+        nodes: scopedGraph.nodes.length,
+        edges: scopedGraph.edges.length,
+        files: files.length,
+        warnings: scopedGraph.nodes.filter((node) => node.kind === "warning").length
+      },
+      files,
+      nodes,
+      edges
+    },
+    summary: createTraceSummary({
+      warning,
+      finding,
+      relatedEvents,
+      timeline,
+      files
+    }),
+    nextCommands
+  };
+
+  if (finding) {
+    payload.finding = finding;
+  }
+
+  return payload;
+}
+
+function formatSnitchTrace(payload: SnitchTracePayload): string {
+  const warningLines = payload.warning
+    ? [
+        `- Warning: [${payload.warning.severity}] ${payload.warning.title}`,
+        `- Warning ID: ${payload.warning.id}`,
+        `- Anchor: ${payload.finding ? formatFindingLocation(payload.finding) : "unanchored"}`,
+        `- Repair: ${payload.warning.repairCommand}`
+      ]
+    : ["- No active warnings to trace."];
+  const eventLines = payload.relatedEvents.length > 0
+    ? payload.relatedEvents.map((event) => `  - ${event.source}:${event.hook} ${formatSafeEventSummary(event)}`)
+    : ["  - none"];
+  const timelineLines = payload.timeline.length > 0
+    ? payload.timeline.map((entry) => `  - ${formatTimelineEntry(entry)}`)
+    : ["  - none"];
+  const fileLines = payload.impact.files.length > 0
+    ? payload.impact.files.map((file) => `  - ${file}`)
+    : ["  - none"];
+
+  return [
+    "Snitch warning trace",
+    ...warningLines,
+    `- Scope: ${payload.impact.counts.nodes} nodes, ${payload.impact.counts.edges} edges`,
+    "",
+    "Trace summary:",
+    ...payload.summary.map((line) => `- ${line}`),
+    "",
+    "Likely related agent events:",
+    ...eventLines,
+    "",
+    "Graph timeline:",
+    ...timelineLines,
+    "",
+    "Affected files:",
+    ...fileLines,
+    "",
+    "Next commands:",
+    ...payload.nextCommands.map((command) => `- ${command}`)
+  ].join("\n") + "\n";
+}
+
+function createTraceSummary(input: {
+  warning: SnitchWarning | undefined;
+  finding: SnitchFinding | undefined;
+  relatedEvents: SafeEventReference[];
+  timeline: TimelineEntry[];
+  files: string[];
+}): string[] {
+  if (!input.warning) {
+    return ["No active warning is present in the current graph."];
+  }
+
+  return [
+    `${input.warning.title} is active in the current code-derived graph.`,
+    input.finding
+      ? `Snitch anchors the finding at ${formatFindingLocation(input.finding)}.`
+      : "Snitch could not anchor this warning to a file yet.",
+    input.relatedEvents.length > 0
+      ? `${input.relatedEvents.length} safe hook event(s) touched the anchored file.`
+      : "No safe hook event touched the anchored file in the retained event window.",
+    input.timeline.length > 0
+      ? `${input.timeline.length} recent graph timeline ${input.timeline.length === 1 ? "entry is" : "entries are"} available for replay.`
+      : "No graph timeline entries are available yet.",
+    input.files.length > 0
+      ? `Impacted file set: ${input.files.join(", ")}.`
+      : "No impacted files were found in the scoped graph."
+  ];
+}
+
+function formatTimelineEntry(entry: TimelineEntry): string {
+  const diff = entry.diffSummary;
+  const parts = [
+    `${entry.title} (${entry.snapshotId})`,
+    `warnings=${entry.warningCount}`,
+    `nodes +${diff.addedNodes}/-${diff.removedNodes}`,
+    `edges +${diff.addedEdges}/-${diff.removedEdges}`
+  ];
+
+  if (entry.source) {
+    parts.push(`source=${entry.source}`);
+  }
+
+  return parts.join(", ");
 }
 
 async function readSnitchFindings(cwd: string, flags: ParsedArgs["flags"]): Promise<string> {
@@ -1529,7 +1755,7 @@ function createMcpInitializeResult(params: unknown): Record<string, unknown> {
       version: "0.1.0"
     },
     instructions:
-      "Use Snitch tools to inspect the local .snitch graph, active warnings, safe agent events, next action, and repair prompts for AI coding-agent changes."
+      "Use Snitch tools to inspect the local .snitch graph, active warnings, safe agent events, warning traces, next action, and repair prompts for AI coding-agent changes."
   };
 }
 
@@ -1613,6 +1839,26 @@ function createMcpTools(): Array<Record<string, unknown>> {
       }
     },
     {
+      name: "snitch_trace",
+      title: "Snitch Warning Trace",
+      description:
+        "Trace an active Snitch warning to its anchored finding, likely related safe hook events, graph timeline, and repair commands.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          cwd: {
+            type: "string",
+            description: "Repository root. Defaults to the MCP server working directory."
+          },
+          warning: {
+            type: "string",
+            description: "Warning id. Defaults to the highest-severity active warning."
+          }
+        },
+        additionalProperties: false
+      }
+    },
+    {
       name: "snitch_impact",
       title: "Snitch Warning Impact",
       description:
@@ -1682,6 +1928,10 @@ async function callMcpTool(cwd: string, params: unknown): Promise<McpToolResult>
 
     if (name === "snitch_next_action") {
       return jsonMcpToolResult(await readSnitchNextActionPayload(toolCwd));
+    }
+
+    if (name === "snitch_trace") {
+      return jsonMcpToolResult(await readSnitchTracePayload(toolCwd, mcpFlags(args)));
     }
 
     if (name === "snitch_impact") {
@@ -3206,6 +3456,7 @@ Use Snitch when a task changes routes, tools, schemas, auth, permissions, extern
 - Run \`pnpm snitch check --target . --task "<current task>"\` before handing off risky changes.
 - Run \`pnpm snitch insights --offline\` when provider credentials are unavailable.
 - Run \`pnpm snitch next-action\` after Snitch captures a hook event to get the current grounded agent follow-up.
+- Run \`pnpm snitch trace --warning <id>\` when you need to connect a warning to safe hook events and graph timeline evidence.
 - Run \`pnpm snitch repair-prompt\` when warnings are active, then implement the returned agent prompt.
 - Run \`pnpm snitch finalize\` before preparing a pull request or handoff.
 - Treat \`.snitch/graph.json\`, \`.snitch/warnings.json\`, \`.snitch/findings.json\`, \`.snitch/next-action.md\`, \`.snitch/mermaid.mmd\`, \`.snitch/pr-comment.md\`, and \`.snitch/handoff.md\` as generated evidence.
@@ -3466,6 +3717,46 @@ async function readEvents(cwd: string): Promise<SnitchEvent[]> {
   }
 }
 
+async function readTimelineEntries(cwd: string): Promise<TimelineEntry[]> {
+  try {
+    const contents = await readFile(resolve(cwd, ".snitch/timeline.jsonl"), "utf8");
+
+    return contents
+      .split("\n")
+      .filter(Boolean)
+      .flatMap((line) => {
+        try {
+          const parsed = JSON.parse(line) as unknown;
+
+          return isTimelineEntry(parsed) ? [parsed] : [];
+        } catch {
+          return [];
+        }
+      });
+  } catch {
+    return [];
+  }
+}
+
+function isTimelineEntry(value: unknown): value is TimelineEntry {
+  if (!isRecord(value) || !isRecord(value.diffSummary)) {
+    return false;
+  }
+
+  return (
+    typeof value.snapshotId === "string" &&
+    typeof value.title === "string" &&
+    typeof value.description === "string" &&
+    typeof value.warningCount === "number" &&
+    typeof value.diffSummary.addedNodes === "number" &&
+    typeof value.diffSummary.removedNodes === "number" &&
+    typeof value.diffSummary.changedNodes === "number" &&
+    typeof value.diffSummary.addedEdges === "number" &&
+    typeof value.diffSummary.removedEdges === "number" &&
+    typeof value.diffSummary.changedEdges === "number"
+  );
+}
+
 async function writeJson(cwd: string, path: string, value: unknown): Promise<void> {
   await writeText(cwd, path, `${JSON.stringify(value, null, 2)}\n`);
 }
@@ -3580,6 +3871,7 @@ function helpText(): string {
     "  snitch insights [--cwd <repo>] [--offline]",
     "  snitch repair-prompt [--cwd <repo>] [--warning <id>] [--all]",
     "  snitch status [--cwd <repo>] [--json]",
+    "  snitch trace [--cwd <repo>] [--warning <id>] [--json]",
     "  snitch impact [--cwd <repo>] [--warning <id>] [--json]",
     "  snitch findings [--cwd <repo>] [--json]",
     "  snitch next-action [--cwd <repo>] [--json]",

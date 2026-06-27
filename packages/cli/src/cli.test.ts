@@ -294,6 +294,9 @@ describe("snitch cli", () => {
     expect(parsed.artifacts.nextAction.available).toBe(true);
     expect(parsed.artifacts.prComment.available).toBe(true);
     expect(parsed.nextCommands).toContain("pnpm snitch next-action --json");
+    expect(
+      parsed.nextCommands.some((command: string) => command.startsWith("pnpm snitch trace --warning "))
+    ).toBe(true);
     expect(parsed.nextCommands).toContain(
       `pnpm snitch check --target ${demoRoot} --fail-on medium --json`
     );
@@ -406,6 +409,60 @@ describe("snitch cli", () => {
     expect(human.stdout).toContain("pnpm snitch repair-prompt --warning");
   });
 
+  it("traces an active warning to graph evidence, safe events, and timeline entries", async () => {
+    const cwd = await tempRepo();
+
+    await runCli(["init", "--target", demoRoot, "--task", "Wire an issue tool"], { cwd, now });
+    await runCli(["event", "--source", "codex", "--hook", "PostToolUse"], {
+      cwd,
+      stdin: JSON.stringify({
+        tool_name: "apply_patch",
+        file_path: "src/tools/create-issue.ts",
+        command: "apply trace fixture payload"
+      }),
+      now: new Date("2026-06-27T12:03:30.000Z")
+    });
+
+    const result = await runCli(
+      ["trace", "--warning", "warning:tool_audit_log_missing:create_issue", "--json"],
+      { cwd }
+    );
+    const parsed = JSON.parse(result.stdout);
+
+    expect(result.code).toBe(0);
+    expect(parsed.status).toBe("traced");
+    expect(parsed.warning.id).toBe("warning:tool_audit_log_missing:create_issue");
+    expect(parsed.finding.anchor).toMatchObject({
+      file: "src/tools/create-issue.ts",
+      line: 9
+    });
+    expect(parsed.relatedEvents[0]).toMatchObject({
+      source: "codex",
+      hook: "PostToolUse",
+      safeSummary: {
+        tool_name: "apply_patch",
+        file_path: "src/tools/create-issue.ts"
+      }
+    });
+    expect(JSON.stringify(parsed)).toContain("commandHash");
+    expect(JSON.stringify(parsed)).not.toContain("trace fixture payload");
+    expect(parsed.timeline.length).toBeGreaterThan(0);
+    expect(parsed.impact.files).toContain("src/tools/create-issue.ts");
+    expect(parsed.nextCommands[0]).toBe(
+      "pnpm snitch repair-prompt --warning warning:tool_audit_log_missing:create_issue"
+    );
+
+    const human = await runCli(
+      ["trace", "--warning", "warning:tool_audit_log_missing:create_issue"],
+      { cwd }
+    );
+
+    expect(human.stdout).toContain("Snitch warning trace");
+    expect(human.stdout).toContain("Likely related agent events");
+    expect(human.stdout).toContain("Graph timeline");
+    expect(human.stdout).toContain("src/tools/create-issue.ts:9");
+  });
+
   it("serves Snitch tools over the MCP JSON-RPC handler", async () => {
     const cwd = await tempRepo();
 
@@ -463,9 +520,20 @@ describe("snitch cli", () => {
         arguments: {}
       }
     });
-    const impact = await handleMcpJsonRpcMessage(cwd, {
+    const trace = await handleMcpJsonRpcMessage(cwd, {
       jsonrpc: "2.0",
       id: 7,
+      method: "tools/call",
+      params: {
+        name: "snitch_trace",
+        arguments: {
+          warning: "warning:tool_audit_log_missing:create_issue"
+        }
+      }
+    });
+    const impact = await handleMcpJsonRpcMessage(cwd, {
+      jsonrpc: "2.0",
+      id: 8,
       method: "tools/call",
       params: {
         name: "snitch_impact",
@@ -476,7 +544,7 @@ describe("snitch cli", () => {
     });
     const repair = await handleMcpJsonRpcMessage(cwd, {
       jsonrpc: "2.0",
-      id: 8,
+      id: 9,
       method: "tools/call",
       params: {
         name: "snitch_repair_prompt",
@@ -530,6 +598,21 @@ describe("snitch cli", () => {
         };
       };
     };
+    const traceResult = trace as {
+      result: {
+        isError?: boolean;
+        structuredContent: {
+          status: string;
+          warning: { id: string };
+          finding?: {
+            anchor?: {
+              file: string;
+            };
+          };
+          timeline: unknown[];
+        };
+      };
+    };
     const impactResult = impact as {
       result: {
         isError?: boolean;
@@ -553,6 +636,7 @@ describe("snitch cli", () => {
       "snitch_check",
       "snitch_findings",
       "snitch_next_action",
+      "snitch_trace",
       "snitch_impact",
       "snitch_repair_prompt"
     ]);
@@ -577,6 +661,15 @@ describe("snitch cli", () => {
     expect(nextActionResult.result.structuredContent.nextCommands[0]).toContain(
       "pnpm snitch repair-prompt --warning"
     );
+    expect(traceResult.result.isError).toBe(false);
+    expect(traceResult.result.structuredContent.status).toBe("traced");
+    expect(traceResult.result.structuredContent.warning.id).toBe(
+      "warning:tool_audit_log_missing:create_issue"
+    );
+    expect(traceResult.result.structuredContent.finding?.anchor?.file).toBe(
+      "src/tools/create-issue.ts"
+    );
+    expect(traceResult.result.structuredContent.timeline.length).toBeGreaterThan(0);
     expect(impactResult.result.isError).toBe(false);
     expect(impactResult.result.structuredContent.warning.id).toBe(
       "warning:secret_redaction_missing:create_issue"
