@@ -21,7 +21,7 @@ describe("Snitch dashboard", () => {
     expect(screen.getByRole("region", { name: "System map" })).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Findings" })).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "PR comment" })).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "Insight" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "How Snitch works" })).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /No audit trail for external tool calls/i })
     ).toBeInTheDocument();
@@ -36,9 +36,8 @@ describe("Snitch dashboard", () => {
     expect(screen.getByRole("region", { name: "Next action" })).toHaveTextContent(
       "No per-session permission boundary"
     );
-    expect(screen.getByLabelText("Selected graph node")).toHaveTextContent(
-      "No per-session permission boundary"
-    );
+    // Selecting a finding focuses the real code node it sits on, not a floating warning box.
+    expect(screen.getByLabelText("Selected graph node")).toHaveTextContent("Create issue tool");
   });
 
   it("shows the repair prompt for the selected finding in the next action card", async () => {

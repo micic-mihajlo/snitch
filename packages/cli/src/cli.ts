@@ -12,16 +12,13 @@ import {
   buildSnitchFindings,
   buildSnitchArtifacts,
   createCerebrasDiagramInput,
-  createCerebrasNarrationInput,
-  createCerebrasWarningTriageInput,
+  createFallbackWarningRankings,
   createStaticNarration,
   diagramWithCerebras,
   diffGraph,
   getDemoReplay,
   getReviewSnapshot,
   loadBackboardRepoRules,
-  narrateWithCerebras,
-  rankWarningsWithCerebras,
   rememberBackboardWarningDecision,
   scopeGraph,
   verifyIntentCoverage,
@@ -232,7 +229,6 @@ type SnitchStatusPayload = {
   integrations: {
     cerebras?: {
       status: IntegrationStatus;
-      triageStatus: IntegrationStatus;
       model?: string;
     };
     backboard?: {
@@ -490,7 +486,6 @@ type InsightArtifact = {
   narration: string;
   cerebras: {
     status: IntegrationStatus;
-    triageStatus: IntegrationStatus;
     model?: string;
   };
   backboard: {
@@ -1479,7 +1474,6 @@ function readStatusIntegrations(
     if (insights.cerebras) {
       integrations.cerebras = {
         status: insights.cerebras.status,
-        triageStatus: insights.cerebras.triageStatus,
         ...(insights.cerebras.model ? { model: insights.cerebras.model } : {})
       };
     }
@@ -2177,7 +2171,7 @@ function formatSnitchBriefing(payload: SnitchBriefingPayload): string {
 function formatBriefingIntegrations(integrations: SnitchStatusPayload["integrations"]): string {
   const parts = [
     integrations.cerebras
-      ? `Cerebras ${integrations.cerebras.status}/${integrations.cerebras.triageStatus}${integrations.cerebras.model ? ` (${integrations.cerebras.model})` : ""}`
+      ? `Cerebras diagram ${integrations.cerebras.status}${integrations.cerebras.model ? ` (${integrations.cerebras.model})` : ""}`
       : "Cerebras no artifact",
     integrations.backboard
       ? `Backboard ${integrations.backboard.status}, ${integrations.backboard.rules.length} rule(s)`
@@ -4498,12 +4492,6 @@ async function writeInsightArtifacts(cwd: string, options: InsightOptions): Prom
   }
 
   const backboard = await loadBackboardRepoRules(backboardInput);
-  const narrationInput = createCerebrasNarrationInput({
-    task,
-    diff,
-    warnings,
-    repoRules: backboard.rules
-  });
   const changedFlags = new Map<string, string | true>();
 
   if (options.baseRef) {
@@ -4538,10 +4526,6 @@ async function writeInsightArtifacts(cwd: string, options: InsightOptions): Prom
   }
 
   const diagramInput = createCerebrasDiagramInput(diagramInputOptions);
-  const cerebrasInput: Parameters<typeof narrateWithCerebras>[0] = {
-    model: env.CEREBRAS_MODEL || "gpt-oss-120b",
-    input: narrationInput
-  };
   const diagramCerebrasInput: Parameters<typeof diagramWithCerebras>[0] = {
     model: env.CEREBRAS_MODEL || "gpt-oss-120b",
     input: diagramInput,
@@ -4550,61 +4534,35 @@ async function writeInsightArtifacts(cwd: string, options: InsightOptions): Prom
   };
 
   if (env.CEREBRAS_API_KEY) {
-    cerebrasInput.apiKey = env.CEREBRAS_API_KEY;
     diagramCerebrasInput.apiKey = env.CEREBRAS_API_KEY;
   }
 
   if (fetcher) {
-    cerebrasInput.fetcher = fetcher;
     diagramCerebrasInput.fetcher = fetcher;
   }
 
-  const triageInput = createCerebrasWarningTriageInput({
-    task,
-    warnings,
-    repoRules: backboard.rules
-  });
-  const warningTriageInput: Parameters<typeof rankWarningsWithCerebras>[0] = {
-    model: env.CEREBRAS_MODEL || "gpt-oss-120b",
-    input: triageInput,
-    warnings
-  };
-
-  if (env.CEREBRAS_API_KEY) {
-    warningTriageInput.apiKey = env.CEREBRAS_API_KEY;
-  }
-
-  if (fetcher) {
-    warningTriageInput.fetcher = fetcher;
-  }
-
-  const [cerebras, warningTriage, diagram] = await Promise.all([
-    narrateWithCerebras(cerebrasInput),
-    rankWarningsWithCerebras(warningTriageInput),
-    diagramWithCerebras(diagramCerebrasInput)
-  ]);
+  // Cerebras has exactly one job: draw the fast architecture diagram. It never decides what
+  // is wrong. Findings and their order come only from the deterministic rule engine, so the
+  // gate and the MCP tools stay reproducible whether or not a provider key is present.
+  const diagram = await diagramWithCerebras(diagramCerebrasInput);
+  const rankedWarnings = createFallbackWarningRankings(warnings);
   const artifact: InsightArtifact = {
     generatedAt: options.now.toISOString(),
     narration:
-      cerebras.status === "disabled" || cerebras.status === "fallback"
-        ? createStaticNarration(diff, warnings)
-        : cerebras.text,
+      diagram.status === "ok" && diagram.summary.trim()
+        ? diagram.summary.trim()
+        : createStaticNarration(diff, warnings),
     cerebras: {
-      status: cerebras.status,
-      triageStatus: warningTriage.status
+      status: diagram.status
     },
     backboard: {
       status: backboard.status,
       rules: backboard.rules
     },
-    rankedWarnings: warningTriage.rankedWarnings
+    rankedWarnings
   };
 
-  if (cerebras.model) {
-    artifact.cerebras.model = cerebras.model;
-  } else if (warningTriage.model) {
-    artifact.cerebras.model = warningTriage.model;
-  } else if (diagram.model) {
+  if (diagram.model) {
     artifact.cerebras.model = diagram.model;
   }
 
@@ -4625,10 +4583,9 @@ async function writeInsightArtifacts(cwd: string, options: InsightOptions): Prom
 
   return [
     "Snitch insights artifact written.",
-    `- Cerebras: ${artifact.cerebras.status} narration / ${artifact.cerebras.triageStatus} triage${artifact.cerebras.model ? ` (${artifact.cerebras.model})` : ""}`,
-    `- Diagram: ${diagramArtifact.status} / ${diagramArtifact.graph.nodes.length} nodes`,
+    `- Cerebras diagram: ${diagramArtifact.status} / ${diagramArtifact.graph.nodes.length} nodes${artifact.cerebras.model ? ` (${artifact.cerebras.model})` : ""}`,
     `- Backboard: ${artifact.backboard.status} / ${artifact.backboard.rules.length} rules`,
-    `- Ranked warnings: ${artifact.rankedWarnings.length}`,
+    `- Ranked warnings: ${artifact.rankedWarnings.length} (rule-based)`,
     "- Updated: .snitch/insights.json",
     "- Updated: .snitch/diagram.json"
   ].join("\n") + "\n";

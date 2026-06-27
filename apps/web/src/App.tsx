@@ -11,8 +11,8 @@ import { ChangedFiles } from "./components/ChangedFiles";
 import { ConnectionStatus } from "./components/ConnectionStatus";
 import { Findings } from "./components/Findings";
 import { GraphCanvas } from "./components/GraphCanvas";
-import { InsightFooter } from "./components/InsightFooter";
 import { NextAction } from "./components/NextAction";
+import { ProviderLanes } from "./components/ProviderLanes";
 import { ReviewExport } from "./components/ReviewExport";
 import { scopeGraph, type GraphScope } from "./lib/graphScope";
 import { type RankedWarningView, useLiveSnitch } from "./lib/useLiveSnitch";
@@ -102,17 +102,10 @@ export default function App() {
     return scopeGraph(currentSnapshot.graph, diff, graphScope, selectedWarning?.id, scopeOptions);
   }, [changedFilePaths, currentSnapshot.graph, diff, graphScope, live.diagram?.graph, selectedWarning?.id]);
 
-  const scopedNodeIds = useMemo(() => new Set(scopedGraph.nodes.map((node) => node.id)), [scopedGraph.nodes]);
-  const selectedNodeInScope = selectedNode && scopedNodeIds.has(selectedNode.id) ? selectedNode : undefined;
   const selectedNodeEdges = useMemo(
-    () => edgesForNode(scopedGraph.edges, selectedNodeInScope?.id),
-    [scopedGraph.edges, selectedNodeInScope?.id]
+    () => edgesForNode(currentSnapshot.graph.edges, selectedNode?.id),
+    [currentSnapshot.graph.edges, selectedNode?.id]
   );
-  const focusedNodeId = selectedNode && scopedNodeIds.has(selectedNode.id)
-    ? selectedNode.id
-    : selectedWarning && scopedNodeIds.has(selectedWarning.id)
-      ? selectedWarning.id
-      : undefined;
 
   const changed = live.changed;
   const changedClean = Boolean(changed && changed.git.available && changed.counts.changedFindings === 0);
@@ -125,28 +118,23 @@ export default function App() {
   // Until the reviewer clicks a finding, keep the selection pinned to the top-ranked one so
   // the Next action card, the Findings list, and the map focus all agree on "what matters most".
   useEffect(() => {
+    const top = rankedWarnings[0];
     const stillValid = rankedWarnings.some((warning) => warning.id === selectedWarningId);
     if (!stillValid) {
-      setSelectedWarningId(rankedWarnings[0]?.id);
-      setSelectedNodeId(rankedWarnings[0]?.id);
+      setSelectedWarningId(top?.id);
+      setSelectedNodeId(top ? affectedNodeId(currentSnapshot.graph, top.id) : undefined);
       return;
     }
-    if (!userPickedWarning && rankedWarnings[0] && rankedWarnings[0].id !== selectedWarningId) {
-      setSelectedWarningId(rankedWarnings[0].id);
-      setSelectedNodeId(rankedWarnings[0].id);
+    if (!userPickedWarning && top && top.id !== selectedWarningId) {
+      setSelectedWarningId(top.id);
+      setSelectedNodeId(affectedNodeId(currentSnapshot.graph, top.id));
     }
-  }, [rankedWarnings, selectedWarningId, userPickedWarning]);
-
-  useEffect(() => {
-    if (!selectedNodeId || !nodeById.has(selectedNodeId)) {
-      setSelectedNodeId(selectedWarning?.id);
-    }
-  }, [nodeById, selectedNodeId, selectedWarning?.id]);
+  }, [rankedWarnings, selectedWarningId, userPickedWarning, currentSnapshot.graph]);
 
   function handleSelectWarning(warning: SnitchWarning) {
     setUserPickedWarning(true);
     setSelectedWarningId(warning.id);
-    setSelectedNodeId(warning.id);
+    setSelectedNodeId(affectedNodeId(currentSnapshot.graph, warning.id));
   }
 
   const task = live.task ?? fallbackTask;
@@ -230,11 +218,11 @@ export default function App() {
         ) : null}
         <GraphCanvas
           graph={scopedGraph}
-          selectedNodeId={focusedNodeId}
+          selectedNodeId={selectedNodeId}
           onSelectNode={(node) => setSelectedNodeId(node.id)}
           cwd={live.cwd}
         />
-        <SelectionStrip node={selectedNodeInScope} edges={selectedNodeEdges} cwd={live.cwd} />
+        <SelectionStrip node={selectedNode} edges={selectedNodeEdges} cwd={live.cwd} />
       </section>
 
       <Findings
@@ -244,8 +232,7 @@ export default function App() {
         onSelect={handleSelectWarning}
       />
 
-      <InsightFooter
-        lines={compactNarration(live.diagram?.summary ?? integration.narration)}
+      <ProviderLanes
         cerebrasStatus={integration.cerebrasStatus}
         backboardStatus={integration.backboardStatus}
       />
@@ -332,13 +319,18 @@ function nextActionAnchor(
   return href ? { href, label } : { label };
 }
 
-function compactNarration(narration: string): string[] {
-  const lines = narration
-    .split(/\n+/)
-    .map((line) => line.replace(/^[*\-\s]+/, "").replace(/\*\*/g, "").trim())
-    .filter(Boolean);
+// A finding's warning sits on the real node it flags. When a finding is selected we focus that
+// real node (preferring one with a file anchor) so the map highlight, the selection strip, and
+// the Next action anchor all point at the same line of code.
+function affectedNodeId(graph: { nodes: GraphNode[]; edges: GraphEdge[] }, warningId: string): string | undefined {
+  const nodeById = new Map(graph.nodes.map((node) => [node.id, node]));
+  const neighbors = graph.edges
+    .filter((edge) => edge.from === warningId || edge.to === warningId)
+    .map((edge) => (edge.from === warningId ? edge.to : edge.from))
+    .map((id) => nodeById.get(id))
+    .filter((node): node is GraphNode => Boolean(node) && node?.kind !== "warning");
 
-  return (lines.length > 0 ? lines : ["No integration narration is available yet."]).slice(0, 4);
+  return (neighbors.find((node) => node.file) ?? neighbors[0])?.id;
 }
 
 function edgesForNode(edges: GraphEdge[], nodeId: string | undefined): GraphEdge[] {

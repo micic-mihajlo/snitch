@@ -8,7 +8,7 @@ import {
   type Node,
   type NodeProps
 } from "@xyflow/react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo } from "react";
 import type { GraphNode, SnitchGraph } from "@snitch/graph";
 
 type Props = {
@@ -18,15 +18,15 @@ type Props = {
   cwd?: string | undefined;
 };
 
-// Left-to-right architecture layers, ilograph style: who acts on the left, what they reach
-// on the right, and the safeguards/gaps furthest right.
+// Left-to-right architecture layers: who acts on the left, what they reach on the right.
+// Findings are NOT drawn as their own nodes anymore — they ride as a badge on the real node
+// that is missing its companion, so the map reads as an architecture diagram, not a wall of
+// red boxes.
 function layerForNode(node: GraphNode): number {
   switch (node.kind) {
     case "agent":
       return 0;
     case "service":
-      // Plain services (registries, dispatchers) sit early; role-tagged safeguards
-      // (audit/redaction) belong with the other guardrails on the right.
       return node.meta?.role ? 4 : 1;
     case "tool":
     case "endpoint":
@@ -36,12 +36,9 @@ function layerForNode(node: GraphNode): number {
     case "database":
       return 3;
     case "external":
-      return 4;
     case "contract":
     case "test":
       return 4;
-    case "warning":
-      return 5;
     default:
       return 2;
   }
@@ -57,8 +54,7 @@ const kindLabels: Record<string, string> = {
   database: "data",
   external: "external",
   contract: "contract",
-  test: "test",
-  warning: "warning"
+  test: "test"
 };
 
 type SystemNodeData = {
@@ -66,8 +62,9 @@ type SystemNodeData = {
   kind: GraphNode["kind"];
   file?: string;
   line?: number;
-  severity?: string;
   editorHref?: string;
+  findingCount: number;
+  findingSeverity?: string;
   dimmed: boolean;
   emphasized: boolean;
 };
@@ -76,9 +73,9 @@ function SystemNode({ data }: NodeProps<Node<SystemNodeData>>) {
   const classes = [
     "sys-node",
     `sys-node-${data.kind}`,
+    data.findingCount > 0 ? "sys-node-flagged" : "",
     data.dimmed ? "sys-node-dim" : "",
-    data.emphasized ? "sys-node-on" : "",
-    data.severity ? `sys-node-sev-${data.severity}` : ""
+    data.emphasized ? "sys-node-on" : ""
   ]
     .filter(Boolean)
     .join(" ");
@@ -86,15 +83,19 @@ function SystemNode({ data }: NodeProps<Node<SystemNodeData>>) {
   return (
     <div className={classes} title={data.file ? `${data.file}${data.line ? `:${data.line}` : ""}` : data.label}>
       <Handle type="target" position={Position.Left} />
+      {data.findingCount > 0 ? (
+        <span
+          className={data.findingSeverity === "medium" ? "node-badge badge-medium" : "node-badge"}
+          title={`${data.findingCount} finding${data.findingCount === 1 ? "" : "s"} on this node`}
+        >
+          {data.findingCount}
+        </span>
+      ) : null}
       <span className="sys-node-kind">{kindLabels[data.kind] ?? data.kind}</span>
       <span className="sys-node-label">{data.label}</span>
       {data.file ? (
         data.editorHref ? (
-          <a
-            className="sys-node-file"
-            href={data.editorHref}
-            onClick={(event) => event.stopPropagation()}
-          >
+          <a className="sys-node-file" href={data.editorHref} onClick={(event) => event.stopPropagation()}>
             {data.file}
             {data.line ? `:${data.line}` : ""}
           </a>
@@ -113,36 +114,41 @@ function SystemNode({ data }: NodeProps<Node<SystemNodeData>>) {
 const nodeTypes = { system: SystemNode };
 
 export function GraphCanvas({ graph, selectedNodeId, onSelectNode, cwd }: Props) {
-  const [hoveredId, setHoveredId] = useState<string | undefined>(undefined);
-  const activeId = hoveredId ?? selectedNodeId;
+  // Split warning nodes out of the rendered graph and fold them into per-node finding badges.
+  const { realNodes, realEdges, findingsByNode } = useMemo(() => collapseWarnings(graph), [graph]);
 
-  const neighborhood = useMemo(() => relatedNodeIds(graph, activeId), [graph, activeId]);
+  // Selection can arrive as a warning id (from the Findings list) or a real node id (from a
+  // map click). Resolve either to the real node we actually draw, so highlighting is stable.
+  const activeId = useMemo(
+    () => resolveActiveId(selectedNodeId, realNodes, graph),
+    [selectedNodeId, realNodes, graph]
+  );
+  const neighborhood = useMemo(() => relatedNodeIds(realEdges, activeId), [realEdges, activeId]);
 
   const nodes = useMemo<Node<SystemNodeData>[]>(
-    () => layoutNodes(graph.nodes, neighborhood, activeId, cwd),
-    [graph.nodes, neighborhood, activeId, cwd]
+    () => layoutNodes(realNodes, findingsByNode, neighborhood, activeId, cwd),
+    [realNodes, findingsByNode, neighborhood, activeId, cwd]
   );
 
   const edges = useMemo<Edge[]>(
     () =>
-      graph.edges.map((edge) => {
+      realEdges.map((edge) => {
         const onPath = activeId ? edge.from === activeId || edge.to === activeId : false;
-        const showLabel = graph.edges.length <= 24 || onPath;
+        const showLabel = realEdges.length <= 20 || onPath;
         return {
           id: edge.id,
           source: edge.from,
           target: edge.to,
           label: showLabel ? edge.kind : undefined,
-          animated: edge.kind === "missing" || edge.kind === "calls",
           className: [`edge-${edge.kind}`, activeId && !onPath ? "edge-dim" : "", onPath ? "edge-on" : ""]
             .filter(Boolean)
             .join(" ")
         };
       }),
-    [graph.edges, activeId]
+    [realEdges, activeId]
   );
 
-  const nodeById = useMemo(() => new Map(graph.nodes.map((node) => [node.id, node])), [graph.nodes]);
+  const nodeById = useMemo(() => new Map(realNodes.map((node) => [node.id, node])), [realNodes]);
 
   const handleNodeClick = useCallback(
     (_event: unknown, node: Node) => {
@@ -161,24 +167,95 @@ export function GraphCanvas({ graph, selectedNodeId, onSelectNode, cwd }: Props)
         edges={edges}
         nodeTypes={nodeTypes}
         fitView
-        fitViewOptions={{ padding: 0.16 }}
+        fitViewOptions={{ padding: 0.18 }}
         minZoom={0.3}
         maxZoom={1.8}
         nodesDraggable={false}
         nodesConnectable={false}
         proOptions={{ hideAttribution: true }}
         onNodeClick={handleNodeClick}
-        onNodeMouseEnter={(_event, node) => setHoveredId(node.id)}
-        onNodeMouseLeave={() => setHoveredId(undefined)}
       >
-        <Background gap={24} color="rgba(24, 24, 22, 0.07)" />
+        <Background gap={24} color="rgba(237, 237, 238, 0.06)" />
         <Controls showInteractive={false} />
       </ReactFlow>
     </div>
   );
 }
 
-function relatedNodeIds(graph: SnitchGraph, activeId: string | undefined): Set<string> | undefined {
+type CollapsedGraph = {
+  realNodes: GraphNode[];
+  realEdges: SnitchGraph["edges"];
+  findingsByNode: Map<string, { count: number; severity: string }>;
+};
+
+function collapseWarnings(graph: SnitchGraph): CollapsedGraph {
+  const warningSeverity = new Map<string, string>();
+  for (const node of graph.nodes) {
+    if (node.kind === "warning") {
+      const severity = typeof node.meta?.severity === "string" ? node.meta.severity : "high";
+      warningSeverity.set(node.id, severity);
+    }
+  }
+
+  const realNodes = graph.nodes.filter((node) => node.kind !== "warning");
+  const realIds = new Set(realNodes.map((node) => node.id));
+  const realEdges = graph.edges.filter((edge) => realIds.has(edge.from) && realIds.has(edge.to));
+
+  // Attach each warning to the real nodes it touches.
+  const findingsByNode = new Map<string, { count: number; severity: string }>();
+  const severityWeight: Record<string, number> = { high: 0, medium: 1, low: 2, info: 3 };
+
+  for (const edge of graph.edges) {
+    const warningId = warningSeverity.has(edge.from)
+      ? edge.from
+      : warningSeverity.has(edge.to)
+        ? edge.to
+        : undefined;
+    if (!warningId) {
+      continue;
+    }
+    const realId = warningId === edge.from ? edge.to : edge.from;
+    if (!realIds.has(realId)) {
+      continue;
+    }
+    const severity = warningSeverity.get(warningId) ?? "high";
+    const current = findingsByNode.get(realId);
+    if (!current) {
+      findingsByNode.set(realId, { count: 1, severity });
+    } else {
+      const worst = (severityWeight[severity] ?? 9) < (severityWeight[current.severity] ?? 9) ? severity : current.severity;
+      findingsByNode.set(realId, { count: current.count + 1, severity: worst });
+    }
+  }
+
+  return { realNodes, realEdges, findingsByNode };
+}
+
+function resolveActiveId(
+  selectedNodeId: string | undefined,
+  realNodes: GraphNode[],
+  graph: SnitchGraph
+): string | undefined {
+  if (!selectedNodeId) {
+    return undefined;
+  }
+  if (realNodes.some((node) => node.id === selectedNodeId)) {
+    return selectedNodeId;
+  }
+  // selectedNodeId is a warning id: focus the real node it sits on.
+  const realIds = new Set(realNodes.map((node) => node.id));
+  for (const edge of graph.edges) {
+    if (edge.from === selectedNodeId && realIds.has(edge.to)) {
+      return edge.to;
+    }
+    if (edge.to === selectedNodeId && realIds.has(edge.from)) {
+      return edge.from;
+    }
+  }
+  return undefined;
+}
+
+function relatedNodeIds(edges: SnitchGraph["edges"], activeId: string | undefined): Set<string> | undefined {
   if (!activeId) {
     return undefined;
   }
@@ -188,8 +265,7 @@ function relatedNodeIds(graph: SnitchGraph, activeId: string | undefined): Set<s
 
   for (let depth = 0; depth < 2; depth += 1) {
     const next = new Set<string>();
-
-    for (const edge of graph.edges) {
+    for (const edge of edges) {
       if (frontier.has(edge.from) && !related.has(edge.to)) {
         related.add(edge.to);
         next.add(edge.to);
@@ -199,7 +275,6 @@ function relatedNodeIds(graph: SnitchGraph, activeId: string | undefined): Set<s
         next.add(edge.from);
       }
     }
-
     frontier = next;
   }
 
@@ -208,6 +283,7 @@ function relatedNodeIds(graph: SnitchGraph, activeId: string | undefined): Set<s
 
 function layoutNodes(
   nodes: GraphNode[],
+  findingsByNode: Map<string, { count: number; severity: string }>,
   neighborhood: Set<string> | undefined,
   activeId: string | undefined,
   cwd: string | undefined
@@ -234,9 +310,11 @@ function layoutNodes(
     const offsetY = (canvasHeight - columnHeight) / 2;
 
     bucket.forEach((node, index) => {
+      const finding = findingsByNode.get(node.id);
       const data: SystemNodeData = {
         label: node.label,
         kind: node.kind,
+        findingCount: finding?.count ?? 0,
         dimmed: Boolean(neighborhood) && !neighborhood?.has(node.id),
         emphasized: activeId === node.id
       };
@@ -247,8 +325,8 @@ function layoutNodes(
       if (typeof node.line === "number") {
         data.line = node.line;
       }
-      if (typeof node.meta?.severity === "string") {
-        data.severity = node.meta.severity;
+      if (finding) {
+        data.findingSeverity = finding.severity;
       }
       const editorHref = buildEditorHref(cwd, node.file, node.line);
       if (editorHref) {
@@ -260,7 +338,6 @@ function layoutNodes(
         type: "system",
         position: { x: layer * columnGap, y: offsetY + index * rowGap },
         data,
-        className: `node-${node.kind}`,
         draggable: false
       });
     });
@@ -269,7 +346,7 @@ function layoutNodes(
   return positioned;
 }
 
-// VS Code / Cursor understand vscode://file/<abs-path>:<line>, so a warning's anchor opens
+// VS Code / Cursor understand vscode://file/<abs-path>:<line>, so a node's anchor opens
 // straight in the editor when the live server tells us the repo root.
 function buildEditorHref(cwd: string | undefined, file: string | undefined, line: number | undefined): string | undefined {
   if (!cwd || !file) {

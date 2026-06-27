@@ -1,7 +1,8 @@
 /* ----------------------------------------------------------------------------
-   Snitch dashboard — soft, calm review surface tuned for a narrow vertical column
+   Snitch dashboard — calm dark review surface tuned for a narrow vertical column
    (one third of a monitor). Geist for UI, Geist Mono for code, Geist Pixel for the
-   wordmark only.
+   wordmark only. Soft, not neon: one accent, semantic color only where it means
+   something.
 ---------------------------------------------------------------------------- */
 
 @font-face {
@@ -29,27 +30,28 @@
 }
 
 :root {
-  /* surfaces */
-  --bg: #f6f6f4;
-  --surface: #ffffff;
-  --surface-sunken: #fafaf9;
-  --border: #ececea;
-  --border-strong: #dededb;
+  /* surfaces, dark to light */
+  --bg: #0c0c0e;
+  --surface: #161619;
+  --surface-raised: #1f1f24;
+  --surface-sunken: #101012;
+  --border: #272729;
+  --border-strong: #3a3a3f;
 
   /* ink */
-  --ink: #1d1d1b;
-  --ink-2: #5f5f5b;
-  --ink-3: #8c8c87;
+  --ink: #ededee;
+  --ink-2: #a4a4ab;
+  --ink-3: #6f6f77;
 
-  /* semantic accents (used sparingly, only where they carry meaning) */
-  --accent: #2f6df6;
-  --accent-soft: #eef2fe;
-  --high: #d6453d;
-  --high-soft: #fcecea;
-  --medium: #c2790b;
-  --medium-soft: #fbf1de;
-  --good: #2c9c5e;
-  --good-soft: #e9f6ee;
+  /* semantic accents */
+  --accent: #5b9dff;
+  --accent-soft: rgba(91, 157, 255, 0.16);
+  --high: #ff6f66;
+  --high-soft: rgba(255, 111, 102, 0.15);
+  --medium: #e8a93f;
+  --medium-soft: rgba(232, 169, 63, 0.15);
+  --good: #56cc8c;
+  --good-soft: rgba(86, 204, 140, 0.15);
 
   --font-sans: "Geist", system-ui, -apple-system, sans-serif;
   --font-mono: "Geist Mono", ui-monospace, "SFMono-Regular", monospace;
@@ -57,7 +59,7 @@
 
   --radius: 10px;
   --radius-sm: 7px;
-  --shadow: 0 1px 2px rgba(24, 24, 22, 0.05), 0 1px 1px rgba(24, 24, 22, 0.03);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
 
   color: var(--ink);
   background: var(--bg);
@@ -66,6 +68,7 @@
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  color-scheme: dark;
 }
 
 * {
@@ -206,14 +209,14 @@ code,
 }
 
 .status-pill.is-live {
-  border-color: rgba(44, 156, 94, 0.4);
+  border-color: rgba(86, 204, 140, 0.45);
   background: var(--good-soft);
-  color: #1f7a48;
+  color: var(--good);
 }
 
 .status-pill.is-live .status-dot {
   background: var(--good);
-  box-shadow: 0 0 0 3px rgba(44, 156, 94, 0.18);
+  box-shadow: 0 0 0 3px rgba(86, 204, 140, 0.2);
 }
 
 /* -------------------------------------------------------------- summary --- */
@@ -491,9 +494,8 @@ code,
 }
 
 .lens.is-active {
-  background: var(--surface);
+  background: var(--surface-raised);
   color: var(--ink);
-  box-shadow: var(--shadow);
 }
 
 .graph-meter {
@@ -560,7 +562,7 @@ code,
   white-space: nowrap;
 }
 
-/* react-flow node styling (light, calm, layered by role) */
+/* react-flow nodes: calm cards, role shown by a colored left rail, findings by a badge */
 .react-flow__node {
   border: 0;
   background: transparent;
@@ -569,6 +571,7 @@ code,
 }
 
 .sys-node {
+  position: relative;
   display: grid;
   gap: 3px;
   width: 188px;
@@ -577,9 +580,13 @@ code,
   border: 1px solid var(--border-strong);
   border-left: 3px solid var(--ink-3);
   border-radius: var(--radius-sm);
-  background: var(--surface);
+  background: var(--surface-raised);
   box-shadow: var(--shadow);
-  transition: border-color 120ms ease, box-shadow 120ms ease, opacity 120ms ease, transform 120ms ease;
+  transition: border-color 120ms ease, box-shadow 120ms ease, opacity 120ms ease;
+}
+
+.sys-node:hover {
+  border-color: var(--ink-3);
 }
 
 .sys-node-kind {
@@ -633,24 +640,42 @@ a.sys-node-file:hover {
   border-left-color: var(--ink-3);
 }
 
-.sys-node-warning,
-.sys-node-sev-high {
-  border-left-color: var(--high);
-  background: var(--high-soft);
+/* a node that carries a finding */
+.sys-node-flagged {
+  border-color: rgba(255, 111, 102, 0.5);
 }
 
-.sys-node-sev-medium {
-  border-left-color: var(--medium);
+.node-badge {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border: 2px solid var(--surface-sunken);
+  border-radius: 999px;
+  background: var(--high);
+  color: #1a0d0c;
+  font-size: 0.62rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.node-badge.badge-medium {
+  background: var(--medium);
+  color: #1d1405;
 }
 
 .sys-node-on {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
-  transform: translateY(-1px);
 }
 
 .sys-node-dim {
-  opacity: 0.32;
+  opacity: 0.34;
 }
 
 .sys-node .react-flow__handle {
@@ -658,11 +683,6 @@ a.sys-node-file:hover {
   height: 6px;
   border: 1px solid var(--border-strong);
   background: var(--surface);
-}
-
-.react-flow__edge.edge-missing path {
-  stroke: var(--high);
-  stroke-dasharray: 5 4;
 }
 
 .react-flow__edge.edge-calls path {
@@ -710,7 +730,7 @@ a.sys-node-file:hover {
 
 .react-flow__controls-button {
   border-bottom: 1px solid var(--border);
-  background: var(--surface);
+  background: var(--surface-raised);
   color: var(--ink-2);
 }
 
@@ -719,7 +739,7 @@ a.sys-node-file:hover {
 }
 
 .react-flow__controls-button:hover {
-  background: var(--surface-sunken);
+  background: var(--surface);
 }
 
 /* ------------------------------------------------------------- findings --- */
@@ -751,7 +771,7 @@ a.sys-node-file:hover {
 
 .finding-row:hover {
   border-color: var(--border-strong);
-  background: var(--surface-sunken);
+  background: var(--surface-raised);
 }
 
 .finding-row.is-selected {
@@ -767,45 +787,106 @@ a.sys-node-file:hover {
   white-space: nowrap;
 }
 
-/* --------------------------------------------------------------- insight --- */
+/* ----------------------------------------------------------------- lanes --- */
 
-.insight-card {
+.lanes-card {
   display: grid;
+  gap: 14px;
+}
+
+.lanes {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.lane {
+  display: grid;
+  gap: 4px;
+}
+
+.lane-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.lane-name {
+  font-size: 0.85rem;
+  font-weight: 560;
+  color: var(--ink);
+}
+
+.lane-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--ink-2);
+}
+
+.lane-status.is-on {
+  border-color: rgba(86, 204, 140, 0.4);
+  color: var(--good);
+}
+
+.lane-status.is-off {
+  color: var(--ink-3);
+}
+
+.lane-role {
+  font-size: 0.82rem;
+  line-height: 1.45;
+  color: var(--ink-2);
+}
+
+.mcp-note {
+  display: grid;
+  gap: 7px;
+  padding: 13px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+}
+
+.mcp-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 10px;
 }
 
-.insight-body {
-  display: grid;
-  gap: 6px;
-}
-
-.insight-body p {
-  font-size: 0.85rem;
-  line-height: 1.5;
-  color: var(--ink-2);
-}
-
-.provider-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.provider-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--surface-sunken);
-  font-size: 0.74rem;
-  color: var(--ink-2);
-}
-
-.provider-chip b {
+.mcp-head span {
+  font-size: 0.82rem;
   font-weight: 550;
   color: var(--ink);
+}
+
+.mcp-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.mcp-tool {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: var(--radius-sm);
+  padding: 2px 7px;
+}
+
+.mcp-role {
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--ink-2);
 }
 
 /* ---------------------------------------------------------------- export --- */
@@ -840,7 +921,7 @@ a.sys-node-file:hover {
   padding: 5px 11px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
-  background: var(--surface);
+  background: var(--surface-raised);
   color: var(--ink-2);
   font-size: 0.76rem;
   font-weight: 500;
