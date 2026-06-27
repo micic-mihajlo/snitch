@@ -3,10 +3,9 @@ import { diffGraph, type ReplaySnapshot } from "@snitch/graph";
 type Props = {
   snapshots: ReplaySnapshot[];
   currentSnapshotId: string;
-  previousSnapshot: ReplaySnapshot;
 };
 
-export function Timeline({ snapshots, currentSnapshotId, previousSnapshot }: Props) {
+export function Timeline({ snapshots, currentSnapshotId }: Props) {
   return (
     <section className="timeline-panel" aria-label="Graph diff timeline">
       <div className="panel-heading">
@@ -16,7 +15,8 @@ export function Timeline({ snapshots, currentSnapshotId, previousSnapshot }: Pro
         </div>
       </div>
       <ol className="timeline-list">
-        {snapshots.map((snapshot) => {
+        {snapshots.map((snapshot, index) => {
+          const previousSnapshot = snapshots[index - 1] ?? snapshot;
           const diff = diffGraph(previousSnapshot.graph, snapshot.graph);
           return (
             <li key={snapshot.id} className={snapshot.id === currentSnapshotId ? "active" : undefined}>

@@ -93,7 +93,6 @@ export default function App() {
         <Timeline
           snapshots={replay.snapshots}
           currentSnapshotId={replay.currentSnapshot.id}
-          previousSnapshot={replay.previousSnapshot}
         />
         <SponsorLane narration={narration} ruleCount={2} cerebrasStatus="ready" backboardStatus="memory on" />
         <ArtifactPanel artifacts={artifacts} />
