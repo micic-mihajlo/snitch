@@ -17,6 +17,16 @@ const tempDirs: string[] = [];
 const now = new Date("2026-06-27T12:00:00.000Z");
 const demoRoot = resolve(import.meta.dirname, "../../../apps/demo-app");
 const execFile = promisify(execFileCallback);
+const gitLocalEnvNames = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_INDEX_FILE",
+  "GIT_PREFIX",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_COMMON_DIR",
+  "GIT_NAMESPACE"
+];
 
 describe("snitch cli", () => {
   afterEach(async () => {
@@ -1810,5 +1820,15 @@ async function tempRepo(): Promise<string> {
 }
 
 async function git(cwd: string, args: string[]): Promise<void> {
-  await execFile("git", args, { cwd });
+  await execFile("git", args, { cwd, env: withoutGitLocalEnv() });
+}
+
+function withoutGitLocalEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const next = { ...env };
+
+  for (const name of gitLocalEnvNames) {
+    delete next[name];
+  }
+
+  return next;
 }

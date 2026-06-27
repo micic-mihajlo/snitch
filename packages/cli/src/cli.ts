@@ -36,6 +36,16 @@ import {
 } from "@snitch/graph";
 
 const execFileAsync = promisify(execFile);
+const gitLocalEnvNames = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_INDEX_FILE",
+  "GIT_PREFIX",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_COMMON_DIR",
+  "GIT_NAMESPACE"
+];
 
 type CliResult = {
   code: number;
@@ -2799,6 +2809,7 @@ async function readGitChangedFiles(cwd: string): Promise<{ available: boolean; f
 
   try {
     const { stdout } = await execFileAsync("git", args, {
+      env: withoutGitLocalEnv(),
       maxBuffer: 1024 * 1024
     });
 
@@ -2813,6 +2824,16 @@ async function readGitChangedFiles(cwd: string): Promise<{ available: boolean; f
       error: errorMessage(error)
     };
   }
+}
+
+function withoutGitLocalEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const next = { ...env };
+
+  for (const name of gitLocalEnvNames) {
+    delete next[name];
+  }
+
+  return next;
 }
 
 function parseGitPorcelain(stdout: string): ChangedFile[] {
