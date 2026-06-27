@@ -5,6 +5,7 @@ import {
   QuoteKind,
   SyntaxKind,
   type CallExpression,
+  type IfStatement,
   type Node as TsMorphNode,
   type ObjectLiteralExpression,
   type SourceFile,
@@ -75,7 +76,10 @@ export function extractTypeScriptGraph(options: ExtractTypeScriptGraphOptions): 
 
   project.addSourceFilesAtPaths([
     `${options.cwd}/src/**/*.{ts,tsx}`,
-    `${options.cwd}/tests/**/*.{ts,tsx}`
+    `${options.cwd}/tests/**/*.{ts,tsx}`,
+    `${options.cwd}/apps/*/src/**/*.{ts,tsx}`,
+    `${options.cwd}/packages/*/src/**/*.{ts,tsx}`,
+    `${options.cwd}/packages/*/tests/**/*.{ts,tsx}`
   ]);
 
   const graph: MutableGraph = {
@@ -96,10 +100,12 @@ export function extractTypeScriptGraph(options: ExtractTypeScriptGraphOptions): 
     extractDatabaseSurface(options.cwd, sourceFile, graph);
     extractCompanionSurface(options.cwd, sourceFile, graph);
     extractTestSurface(options.cwd, sourceFile, graph);
+    extractAgentToolingSurface(options.cwd, sourceFile, graph);
   }
 
   connectKnownIssueTool(graph);
   connectFileLocalSurfaces(graph);
+  connectAgentToolingSurfaces(graph);
   attachMissingCompanionWarnings(graph);
 
   const snitchGraph: SnitchGraph = {
@@ -535,6 +541,125 @@ function extractTestSurface(cwd: string, sourceFile: SourceFile, graph: MutableG
   }
 }
 
+function extractAgentToolingSurface(cwd: string, sourceFile: SourceFile, graph: MutableGraph): void {
+  const file = relativePath(cwd, sourceFile);
+  const scope = sourceScopeForFile(file);
+
+  for (const fn of sourceFile.getFunctions()) {
+    if (fn.getName() === "runCli") {
+      const cliServiceId = cliServiceNodeId(scope);
+
+      addNode(graph, {
+        id: cliServiceId,
+        kind: "service",
+        label: "Snitch CLI dispatcher",
+        file,
+        line: fn.getStartLineNumber(),
+        meta: {
+          symbol: "runCli",
+          scope,
+          surface: "cli-dispatcher"
+        }
+      });
+
+      for (const ifStatement of fn.getDescendantsOfKind(SyntaxKind.IfStatement)) {
+        const commandName = cliCommandNameFromIfStatement(ifStatement);
+
+        if (!commandName) {
+          continue;
+        }
+
+        addNode(graph, {
+          id: cliCommandNodeId(scope, commandName),
+          kind: "tool",
+          label: `snitch ${commandName} CLI command`,
+          file,
+          line: ifStatement.getStartLineNumber(),
+          meta: {
+            command: commandName,
+            invocation: `snitch ${commandName}`,
+            scope,
+            surface: "cli-command",
+            endLine: ifStatement.getThenStatement().getEndLineNumber()
+          }
+        });
+      }
+    }
+
+    if (fn.getName() === "createMcpTools") {
+      const mcpServiceId = mcpServiceNodeId(scope);
+
+      addNode(graph, {
+        id: mcpServiceId,
+        kind: "service",
+        label: "Snitch MCP server",
+        file,
+        line: fn.getStartLineNumber(),
+        meta: {
+          symbol: "createMcpTools",
+          scope,
+          surface: "mcp-server"
+        }
+      });
+
+      for (const objectLiteral of fn.getDescendantsOfKind(SyntaxKind.ObjectLiteralExpression)) {
+        const toolName = getStringProperty(objectLiteral, "name");
+        const title = getStringProperty(objectLiteral, "title");
+        const description = getStringProperty(objectLiteral, "description");
+
+        if (!toolName?.startsWith("snitch_") || !title || !description) {
+          continue;
+        }
+
+        const cliCommand = cliCommandForMcpTool(toolName);
+
+        addNode(graph, {
+          id: mcpToolNodeId(scope, toolName),
+          kind: "tool",
+          label: title,
+          file,
+          line: objectLiteral.getStartLineNumber(),
+          meta: {
+            cliCommand,
+            scope,
+            surface: "mcp-tool",
+            toolName
+          }
+        });
+      }
+    }
+  }
+}
+
+function cliCommandNameFromIfStatement(ifStatement: IfStatement): string | undefined {
+  const expression = ifStatement.getExpression();
+
+  if (!Node.isBinaryExpression(expression)) {
+    return undefined;
+  }
+
+  const operator = expression.getOperatorToken().getKind();
+
+  if (operator !== SyntaxKind.EqualsEqualsEqualsToken && operator !== SyntaxKind.EqualsEqualsToken) {
+    return undefined;
+  }
+
+  const leftText = expression.getLeft().getText();
+  const rightText = expression.getRight().getText();
+  const leftString = getStringLiteralValue(expression.getLeft());
+  const rightString = getStringLiteralValue(expression.getRight());
+
+  if (leftText === "command" && rightString) {
+    return rightString;
+  }
+
+  if (rightText === "command" && leftString) {
+    return leftString;
+  }
+
+  return undefined;
+}
+
 function connectKnownIssueTool(graph: MutableGraph): void {
   if (graph.nodes.has("agent:router") && graph.nodes.has("service:tool_registry")) {
     addEdge(graph, "edge:router-uses-registry", "agent:router", "service:tool_registry", "calls");
@@ -614,6 +739,57 @@ function connectKnownIssueTool(graph: MutableGraph): void {
       "contract:issue_tool_permission_scope",
       "satisfies"
     );
+  }
+}
+
+function connectAgentToolingSurfaces(graph: MutableGraph): void {
+  for (const node of graph.nodes.values()) {
+    if (node.kind !== "tool") {
+      continue;
+    }
+
+    const scope = typeof node.meta?.scope === "string" ? node.meta.scope : undefined;
+
+    if (!scope) {
+      continue;
+    }
+
+    const cliServiceId = cliServiceNodeId(scope);
+    const mcpServiceId = mcpServiceNodeId(scope);
+
+    if (node.meta?.surface === "cli-command" && graph.nodes.has(cliServiceId)) {
+      addEdgeIfMissing(
+        graph,
+        `edge:snitch-cli-registers-${edgeIdPart(node.id)}`,
+        cliServiceId,
+        node.id,
+        "registers"
+      );
+    }
+
+    if (node.meta?.surface === "mcp-tool" && graph.nodes.has(mcpServiceId)) {
+      addEdgeIfMissing(
+        graph,
+        `edge:snitch-mcp-registers-${edgeIdPart(node.id)}`,
+        mcpServiceId,
+        node.id,
+        "registers"
+      );
+
+      if (typeof node.meta.cliCommand === "string") {
+        const cliNodeId = cliCommandNodeId(scope, node.meta.cliCommand);
+
+        if (graph.nodes.has(cliNodeId)) {
+          addEdgeIfMissing(
+            graph,
+            `edge:${edgeIdPart(node.id)}-calls-${edgeIdPart(cliNodeId)}`,
+            node.id,
+            cliNodeId,
+            "calls"
+          );
+        }
+      }
+    }
   }
 }
 
@@ -1116,6 +1292,33 @@ function toolIdForName(name: string): string {
 
 function schemaIdForName(name: string): string {
   return `schema:${slugId(name.replace(/Schema$/i, ""))}`;
+}
+
+function cliServiceNodeId(scope: string): string {
+  return `service:${scope}_snitch_cli`;
+}
+
+function mcpServiceNodeId(scope: string): string {
+  return `service:${scope}_snitch_mcp_server`;
+}
+
+function cliCommandNodeId(scope: string, commandName: string): string {
+  return `tool:${scope}_cli_${slugId(commandName)}`;
+}
+
+function mcpToolNodeId(scope: string, toolName: string): string {
+  return `tool:${scope}_${slugId(toolName)}`;
+}
+
+function cliCommandForMcpTool(toolName: string): string {
+  return toolName.replace(/^snitch_/, "").replaceAll("_", "-");
+}
+
+function sourceScopeForFile(file: string): string {
+  const withoutExtension = file.replace(/\.[cm]?[tj]sx?$/, "");
+  const withoutSourceSegment = withoutExtension.replace(/(^|\/)(src|tests)\//g, "$1");
+
+  return slugId(withoutSourceSegment);
 }
 
 function toolLabel(name: string): string {

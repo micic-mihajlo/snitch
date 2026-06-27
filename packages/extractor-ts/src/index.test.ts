@@ -279,6 +279,75 @@ describe("extractTypeScriptGraph", () => {
     expect(sendStatusAuditWarning?.repairPrompt).toContain("send_status");
   });
 
+  it("extracts agent-native CLI commands and MCP tool definitions", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "snitch-agent-tooling-extractor-"));
+    tempDirs.push(tempRoot);
+    await mkdir(join(tempRoot, "src"), { recursive: true });
+    await writeFile(
+      join(tempRoot, "src/cli.ts"),
+      [
+        "export async function runCli(args: string[]) {",
+        "  const command = args[0] ?? \"help\";",
+        "  if (command === \"briefing\") {",
+        "    return readSnitchBriefing();",
+        "  }",
+        "  if (\"verify-intent\" === command) {",
+        "    return readSnitchIntent();",
+        "  }",
+        "}",
+        "",
+        "function createMcpTools() {",
+        "  return [",
+        "    {",
+        "      name: \"snitch_briefing\",",
+        "      title: \"Snitch Agent Briefing\",",
+        "      description: \"Return a compact coding-agent briefing.\"",
+        "    },",
+        "    {",
+        "      name: \"snitch_verify_intent\",",
+        "      title: \"Snitch Intent Coverage\",",
+        "      description: \"Verify task coverage.\"",
+        "    }",
+        "  ];",
+        "}",
+        "",
+        "export function parseShellCommand(command: string) {",
+        "  if (command === \"deploy\") {",
+        "    return \"not a Snitch CLI command\";",
+        "  }",
+        "}",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const result = extractTypeScriptGraph({ cwd: tempRoot });
+    const nodeIds = result.snapshot.graph.nodes.map((node) => node.id);
+    const edgeIds = result.snapshot.graph.edges.map((edge) => edge.id);
+
+    expect(nodeIds).toEqual(
+      expect.arrayContaining([
+        "service:cli_snitch_cli",
+        "service:cli_snitch_mcp_server",
+        "tool:cli_cli_briefing",
+        "tool:cli_cli_verify_intent",
+        "tool:cli_snitch_briefing",
+        "tool:cli_snitch_verify_intent"
+      ])
+    );
+    expect(nodeIds).not.toContain("tool:cli_cli_deploy");
+    expect(edgeIds).toEqual(
+      expect.arrayContaining([
+        "edge:snitch-cli-registers-tool_cli_cli_briefing",
+        "edge:snitch-cli-registers-tool_cli_cli_verify_intent",
+        "edge:snitch-mcp-registers-tool_cli_snitch_briefing",
+        "edge:snitch-mcp-registers-tool_cli_snitch_verify_intent",
+        "edge:tool_cli_snitch_briefing-calls-tool_cli_cli_briefing",
+        "edge:tool_cli_snitch_verify_intent-calls-tool_cli_cli_verify_intent"
+      ])
+    );
+  });
+
   it("extracts database reads and writes from common TypeScript data clients", async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), "snitch-database-extractor-"));
     tempDirs.push(tempRoot);

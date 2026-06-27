@@ -19,6 +19,7 @@ This repo now includes a working first slice:
 - normalized event model with payload hashing and safe summaries
 - narrow TypeScript extractor for real repo graph generation
 - MCP-style tool extraction for `registerTool`, `server.tool`, and `tool(...)` definitions
+- scoped agent-tooling extraction for Snitch-style CLI commands and MCP tool definitions
 - missing-companion warnings for any extracted tool that calls an external system, not only the demo tool
 - target-aware hook refresh: file-changing events regenerate code-derived artifacts
 - durable live timeline: hook and watcher refreshes append graph diff entries to `.snitch/timeline.jsonl`
