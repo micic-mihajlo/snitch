@@ -21,6 +21,8 @@ import {
   rankWarningsWithCerebras,
   rememberBackboardWarningDecision,
   scopeGraph,
+  verifyIntentCoverage,
+  type IntentCoverage,
   type RankedWarning,
   type ReplaySnapshot,
   type SnitchArtifacts,
@@ -187,6 +189,7 @@ type SnitchStatusPayload = {
     | "handoff"
     | "prComment"
     | "timeline"
+    | "intent"
     | "insights"
     | "memory",
     {
@@ -292,6 +295,13 @@ type SnitchChangedPayload = {
     activeFindings: number;
     changedFindings: number;
   };
+  nextCommands: string[];
+};
+
+type SnitchIntentPayload = IntentCoverage & {
+  ok: true;
+  cwd: string;
+  generatedAt: string;
   nextCommands: string[];
 };
 
@@ -526,6 +536,10 @@ export async function runCli(args: string[], options: RunCliOptions = {}): Promi
 
     if (command === "changed") {
       return ok(await readSnitchChanged(cwd, parsed.flags));
+    }
+
+    if (command === "verify-intent") {
+      return ok(await readSnitchIntent(cwd, parsed.flags));
     }
 
     if (command === "findings") {
@@ -1041,6 +1055,7 @@ async function readStatusArtifacts(cwd: string): Promise<SnitchStatusPayload["ar
     handoff: ".snitch/handoff.md",
     prComment: ".snitch/pr-comment.md",
     timeline: ".snitch/timeline.jsonl",
+    intent: ".snitch/intent.json",
     insights: ".snitch/insights.json",
     memory: ".snitch/memory.json"
   } as const;
@@ -1108,6 +1123,7 @@ function createStatusNextCommands(
 ): string[] {
   const commands = [
     "pnpm snitch doctor --json",
+    "pnpm snitch verify-intent --json",
     "pnpm snitch changed --json",
     "pnpm snitch next-action --json",
     `pnpm snitch check --target ${shellArgForPrompt(session.analysisTarget)} --fail-on medium --json`
@@ -2076,6 +2092,107 @@ function createChangedNextCommands(
   return unique(commands);
 }
 
+async function readSnitchIntent(cwd: string, flags: ParsedArgs["flags"]): Promise<string> {
+  const payload = await readSnitchIntentPayload(cwd, flags);
+
+  await writeJson(cwd, ".snitch/intent.json", payload);
+
+  if (flags.has("json")) {
+    return `${JSON.stringify(payload, null, 2)}\n`;
+  }
+
+  return formatSnitchIntent(payload);
+}
+
+async function readSnitchIntentPayload(
+  cwd: string,
+  flags: ParsedArgs["flags"]
+): Promise<SnitchIntentPayload> {
+  const session = await readSession(cwd);
+  const graph = await readGraphIfExists(cwd);
+
+  if (!graph) {
+    throw new Error("No Snitch graph found. Run `pnpm snitch analyze` or `pnpm snitch init` first.");
+  }
+
+  const taskFlag = flags.get("task");
+  const task = taskFlag && taskFlag !== true ? taskFlag : session.task;
+  const warnings = await readWarnings(cwd, graph);
+  const coverage = verifyIntentCoverage(graph, warnings, task);
+
+  return {
+    ok: true,
+    cwd,
+    generatedAt: new Date().toISOString(),
+    ...coverage,
+    nextCommands: createIntentNextCommands(session, coverage)
+  };
+}
+
+function formatSnitchIntent(payload: SnitchIntentPayload): string {
+  const capabilityLines = payload.capabilities.length > 0
+    ? payload.capabilities.map((capability) => `  - ${capability.label} (${capability.id})`)
+    : ["  - none"];
+  const requirementLines = payload.requirements.length > 0
+    ? payload.requirements.map((requirement) =>
+        `  - [${requirement.status}] ${requirement.capabilityLabel}: ${requirement.label}${formatIntentEvidence(requirement)}`
+      )
+    : ["  - no inferred requirements"];
+  const warningLines = payload.relatedWarnings.length > 0
+    ? payload.relatedWarnings.map((warning) =>
+        `  - [${warning.severity}] ${warning.title} (${warning.id})`
+      )
+    : ["  - none"];
+
+  return [
+    "Snitch intent coverage",
+    `- Status: ${payload.status}`,
+    `- Task: ${payload.task}`,
+    `- Requirements: ${payload.summary.met}/${payload.summary.requirements} met`,
+    `- Related warnings: ${payload.summary.warnings}`,
+    "",
+    "Narrative:",
+    ...payload.narrative.map((line) => `- ${line}`),
+    "",
+    "Capabilities:",
+    ...capabilityLines,
+    "",
+    "Requirements:",
+    ...requirementLines,
+    "",
+    "Related warnings:",
+    ...warningLines,
+    "",
+    "Next commands:",
+    ...payload.nextCommands.map((command) => `- ${command}`)
+  ].join("\n") + "\n";
+}
+
+function formatIntentEvidence(requirement: SnitchIntentPayload["requirements"][number]): string {
+  if (requirement.status === "missing") {
+    return ` - ${requirement.repairHint}`;
+  }
+
+  return requirement.evidence.length > 0 ? ` - ${requirement.evidence.join("; ")}` : "";
+}
+
+function createIntentNextCommands(
+  session: SnitchSession,
+  coverage: IntentCoverage
+): string[] {
+  const commands = coverage.relatedWarnings.flatMap((warning) => [
+    `pnpm snitch trace --warning ${warning.id} --json`,
+    warning.repairCommand
+  ]);
+
+  commands.push(
+    "pnpm snitch next-action --json",
+    `pnpm snitch check --target ${shellArgForPrompt(session.analysisTarget)} --fail-on medium --json`
+  );
+
+  return unique(commands);
+}
+
 async function readGitChangedFiles(cwd: string): Promise<{ available: boolean; files: ChangedFile[]; error?: string }> {
   const args = ["-C", cwd, "status", "--porcelain=v1", "--untracked-files=all"];
 
@@ -2554,7 +2671,7 @@ function createMcpInitializeResult(params: unknown): Record<string, unknown> {
       version: "0.1.0"
     },
     instructions:
-      "Use Snitch tools to inspect setup readiness, the local .snitch graph, changed files, active warnings, safe agent events, warning traces, next action, and repair prompts for AI coding-agent changes."
+      "Use Snitch tools to inspect setup readiness, task intent coverage, the local .snitch graph, changed files, active warnings, safe agent events, warning traces, next action, and repair prompts for AI coding-agent changes."
   };
 }
 
@@ -2694,6 +2811,26 @@ function createMcpTools(): Array<Record<string, unknown>> {
       }
     },
     {
+      name: "snitch_verify_intent",
+      title: "Snitch Intent Coverage",
+      description:
+        "Verify whether the current graph covers the task intent, including capability surfaces, companion work, warnings, and next commands.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          cwd: {
+            type: "string",
+            description: "Repository root. Defaults to the MCP server working directory."
+          },
+          task: {
+            type: "string",
+            description: "Task text to verify. Defaults to the stored Snitch session task."
+          }
+        },
+        additionalProperties: false
+      }
+    },
+    {
       name: "snitch_impact",
       title: "Snitch Warning Impact",
       description:
@@ -2777,6 +2914,10 @@ async function callMcpTool(cwd: string, params: unknown): Promise<McpToolResult>
       return jsonMcpToolResult(await readSnitchChangedPayload(toolCwd, mcpFlags(args)));
     }
 
+    if (name === "snitch_verify_intent") {
+      return jsonMcpToolResult(await readSnitchIntentPayload(toolCwd, mcpFlags(args)));
+    }
+
     if (name === "snitch_impact") {
       const payload = await readSnitchImpactPayload(toolCwd, mcpFlags(args));
       return jsonMcpToolResult(payload);
@@ -2852,6 +2993,10 @@ function mcpFlags(args: Record<string, unknown>): ParsedArgs["flags"] {
 
   if (typeof args.target === "string") {
     flags.set("target", args.target);
+  }
+
+  if (typeof args.task === "string") {
+    flags.set("task", args.task);
   }
 
   if (args.all === true) {
@@ -4333,6 +4478,7 @@ Use Snitch when a task changes routes, tools, schemas, auth, permissions, extern
 
 - Run \`pnpm snitch analyze --target . --task "<current task>"\` after meaningful implementation changes.
 - Run \`pnpm snitch doctor\` when you need to verify that Snitch is wired into this repo and coding-agent session.
+- Run \`pnpm snitch verify-intent --task "<current task>"\` when you need to prove the graph covers the task the agent claims to have completed.
 - Run \`pnpm snitch check --target . --task "<current task>"\` before handing off risky changes.
 - Run \`pnpm snitch insights --offline\` when provider credentials are unavailable.
 - Run \`pnpm snitch next-action\` after Snitch captures a hook event to get the current grounded agent follow-up.
@@ -4771,6 +4917,7 @@ function helpText(): string {
     "  snitch repair-prompt [--cwd <repo>] [--warning <id>] [--all]",
     "  snitch status [--cwd <repo>] [--json]",
     "  snitch doctor [--cwd <repo>] [--json]",
+    "  snitch verify-intent [--cwd <repo>] [--task <task>] [--json]",
     "  snitch changed [--cwd <repo>] [--target <ts-repo>] [--json]",
     "  snitch trace [--cwd <repo>] [--warning <id>] [--json]",
     "  snitch impact [--cwd <repo>] [--warning <id>] [--json]",

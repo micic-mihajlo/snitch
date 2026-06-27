@@ -464,6 +464,59 @@ describe("snitch cli", () => {
     expect(JSON.stringify(parsed)).not.toContain("--force");
   });
 
+  it("verifies task intent coverage from the current graph", async () => {
+    const cwd = await tempRepo();
+
+    await runCli(["analyze", "--target", demoRoot, "--task", "Add an external issue creation tool"], {
+      cwd,
+      now
+    });
+
+    const result = await runCli(
+      ["verify-intent", "--task", "Add an external issue creation tool", "--json"],
+      { cwd }
+    );
+    const parsed = JSON.parse(result.stdout);
+
+    expect(result.code).toBe(0);
+    expect(parsed.status).toBe("partial");
+    expect(parsed.capabilities).toContainEqual(
+      expect.objectContaining({
+        id: "issue_creation"
+      })
+    );
+    expect(parsed.requirements).toContainEqual(
+      expect.objectContaining({
+        id: "issue_creation:tool",
+        status: "met",
+        matchedNodeIds: ["tool:create_issue"]
+      })
+    );
+    expect(parsed.requirements).toContainEqual(
+      expect.objectContaining({
+        id: "issue_creation:audit",
+        status: "missing"
+      })
+    );
+    expect(parsed.relatedWarnings[0]).toMatchObject({
+      id: "warning:tool_audit_log_missing:create_issue"
+    });
+    expect(parsed.nextCommands).toContain(
+      "pnpm snitch repair-prompt --warning warning:tool_audit_log_missing:create_issue"
+    );
+    await expect(readFile(join(cwd, ".snitch/intent.json"), "utf8")).resolves.toContain(
+      "\"status\": \"partial\""
+    );
+
+    const human = await runCli(["verify-intent", "--task", "Add an external issue creation tool"], {
+      cwd
+    });
+
+    expect(human.stdout).toContain("Snitch intent coverage");
+    expect(human.stdout).toContain("Issue tool exists");
+    expect(human.stdout).toContain("External call has audit logging");
+  });
+
   it("prints a scoped warning impact for coding-agent follow-up", async () => {
     const cwd = await tempRepo();
 
@@ -751,6 +804,17 @@ describe("snitch cli", () => {
         arguments: {}
       }
     });
+    const intent = await handleMcpJsonRpcMessage(cwd, {
+      jsonrpc: "2.0",
+      id: 12,
+      method: "tools/call",
+      params: {
+        name: "snitch_verify_intent",
+        arguments: {
+          task: "Add an external issue creation tool"
+        }
+      }
+    });
     const impact = await handleMcpJsonRpcMessage(cwd, {
       jsonrpc: "2.0",
       id: 9,
@@ -859,6 +923,16 @@ describe("snitch cli", () => {
         };
       };
     };
+    const intentResult = intent as {
+      result: {
+        isError?: boolean;
+        structuredContent: {
+          status: string;
+          capabilities: Array<{ id: string }>;
+          requirements: Array<{ id: string; status: string }>;
+        };
+      };
+    };
     const impactResult = impact as {
       result: {
         isError?: boolean;
@@ -885,6 +959,7 @@ describe("snitch cli", () => {
       "snitch_next_action",
       "snitch_trace",
       "snitch_changed",
+      "snitch_verify_intent",
       "snitch_impact",
       "snitch_repair_prompt"
     ]);
@@ -930,6 +1005,19 @@ describe("snitch cli", () => {
     expect(changedResult.result.isError).toBe(false);
     expect(changedResult.result.structuredContent.git.available).toBe(false);
     expect(changedResult.result.structuredContent.changedFindings).toEqual([]);
+    expect(intentResult.result.isError).toBe(false);
+    expect(intentResult.result.structuredContent.status).toBe("partial");
+    expect(intentResult.result.structuredContent.capabilities).toContainEqual(
+      expect.objectContaining({
+        id: "issue_creation"
+      })
+    );
+    expect(intentResult.result.structuredContent.requirements).toContainEqual(
+      expect.objectContaining({
+        id: "issue_creation:audit",
+        status: "missing"
+      })
+    );
     expect(impactResult.result.isError).toBe(false);
     expect(impactResult.result.structuredContent.warning.id).toBe(
       "warning:secret_redaction_missing:create_issue"

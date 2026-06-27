@@ -1,6 +1,7 @@
 export * from "./artifacts";
 export * from "./diff";
 export * from "./findings";
+export * from "./intent";
 export * from "./integrations";
 export * from "./mermaid";
 export * from "./replay";
