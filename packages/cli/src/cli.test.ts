@@ -277,6 +277,43 @@ describe("snitch cli", () => {
     expect(JSON.stringify(parsed)).not.toContain("private-status-secret");
   });
 
+  it("prints a scoped warning impact for coding-agent follow-up", async () => {
+    const cwd = await tempRepo();
+
+    await runCli(["analyze", "--target", demoRoot, "--task", "Wire an issue tool"], { cwd, now });
+
+    const result = await runCli(
+      [
+        "impact",
+        "--warning",
+        "warning:secret_redaction_missing:create_issue",
+        "--json"
+      ],
+      { cwd }
+    );
+    const parsed = JSON.parse(result.stdout);
+
+    expect(result.code).toBe(0);
+    expect(parsed.warning.id).toBe("warning:secret_redaction_missing:create_issue");
+    expect(parsed.files).toContain("src/tools/create-issue.ts");
+    expect(parsed.nodes.map((node: { id: string }) => node.id)).toContain("tool:create_issue");
+    expect(parsed.nodes.map((node: { id: string }) => node.id)).not.toContain(
+      "warning:unauthorized_test_missing:create_issue"
+    );
+    expect(parsed.nextCommands[0]).toBe(
+      "pnpm snitch repair-prompt --warning warning:secret_redaction_missing:create_issue"
+    );
+
+    const human = await runCli(
+      ["impact", "--warning", "warning:secret_redaction_missing:create_issue"],
+      { cwd }
+    );
+
+    expect(human.stdout).toContain("Snitch impact");
+    expect(human.stdout).toContain("Affected files:");
+    expect(human.stdout).toContain("src/tools/create-issue.ts");
+  });
+
   it("analyzes a TypeScript target into Snitch artifacts", async () => {
     const cwd = await tempRepo();
     const result = await runCli(["analyze", "--target", demoRoot, "--task", "Wire an issue tool"], {

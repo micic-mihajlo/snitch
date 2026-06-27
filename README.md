@@ -26,6 +26,7 @@ This repo now includes a working first slice:
 - graph scope controls for all, changed, and selected-warning impact views
 - insights artifact: `pnpm snitch insights` writes Cerebras narration, warning ranking, repair prompts, and Backboard repo-rule status
 - paste-ready repair prompt: `pnpm snitch repair-prompt` prints the next agent fix from active warnings
+- agent/reviewer impact lens: `pnpm snitch impact` prints the affected warning neighborhood as Markdown or JSON
 - CI/local enforcement gate: `pnpm snitch check` exits nonzero when warnings meet a severity threshold
 - finalize memory lane: `pnpm snitch finalize` writes Backboard warning-decision memory with hashed evidence only
 - PR publish bridge: `pnpm snitch publish-github` posts or updates one top-level GitHub PR comment from `.snitch/pr-comment.md`
@@ -63,6 +64,8 @@ pnpm snitch insights --offline
 pnpm snitch insights
 pnpm snitch repair-prompt
 pnpm snitch repair-prompt --warning warning:permission_scope_missing:create_issue
+pnpm snitch impact --warning warning:secret_redaction_missing:create_issue
+pnpm snitch impact --warning warning:secret_redaction_missing:create_issue --json
 pnpm snitch watch --target apps/demo-app --port 4767 --scan-interval 300
 pnpm dev:live
 pnpm demo:live --offline-integrations
@@ -123,6 +126,8 @@ It does not store the raw hook payload. File-changing events refresh the configu
 `snitch finalize` also writes `.snitch/memory.json`. With Backboard credentials, it remembers active warning decisions as safe metadata and evidence hashes; without credentials, it records disabled status so the live dashboard can show the memory lane honestly.
 
 `snitch repair-prompt` is the coding-agent handoff path. It reads the active warning set and prints a paste-ready prompt for the next fix. If `.snitch/insights.json` contains Cerebras warning ranks, Snitch uses that ordering; otherwise it falls back to deterministic severity ordering. Use `--warning <id>` to pin a warning or `--all` to print every active repair prompt.
+
+`snitch impact` is the local impact lens for agents and reviewers. It scopes the graph around a warning, prints the affected files, nodes, edges, and repair command, and supports `--json` so coding agents can consume it directly. Without `--warning`, it uses the highest-severity active warning.
 
 `snitch check` is the enforcement path. It runs the TypeScript extractor, updates `.snitch` artifacts, and exits with code `1` when warnings meet or exceed `--fail-on` (`high` by default). Use `--json` for CI consumers and follow failures with `pnpm snitch repair-prompt --warning <id>`.
 

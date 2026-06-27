@@ -17,6 +17,7 @@ import {
   narrateWithCerebras,
   rankWarningsWithCerebras,
   rememberBackboardWarningDecision,
+  scopeGraph,
   type RankedWarning,
   type ReplaySnapshot,
   type SnitchArtifacts,
@@ -195,6 +196,42 @@ type SnitchStatusPayload = {
   nextCommands: string[];
 };
 
+type SnitchImpactPayload = {
+  ok: true;
+  cwd: string;
+  generatedAt: string;
+  warning: {
+    id: string;
+    severity: SnitchWarning["severity"];
+    title: string;
+    message: string;
+    evidence: string[];
+    repairCommand: string;
+  } | null;
+  counts: {
+    nodes: number;
+    edges: number;
+    files: number;
+    warnings: number;
+  };
+  files: string[];
+  nodes: Array<{
+    id: string;
+    kind: SnitchGraph["nodes"][number]["kind"];
+    label: string;
+    file?: string;
+    line?: number;
+  }>;
+  edges: Array<{
+    id: string;
+    from: string;
+    to: string;
+    kind: SnitchGraph["edges"][number]["kind"];
+    label?: string;
+  }>;
+  nextCommands: string[];
+};
+
 type InsightArtifact = {
   generatedAt: string;
   narration: string;
@@ -309,6 +346,10 @@ export async function runCli(args: string[], options: RunCliOptions = {}): Promi
       }
 
       return ok(await readSnitchStatus(cwd));
+    }
+
+    if (command === "impact") {
+      return ok(await readSnitchImpact(cwd, parsed.flags));
     }
 
     if (command === "analyze") {
@@ -882,6 +923,168 @@ function createStatusNextCommands(
   commands.push("pnpm snitch finalize");
 
   return commands;
+}
+
+async function readSnitchImpact(cwd: string, flags: ParsedArgs["flags"]): Promise<string> {
+  const payload = await readSnitchImpactPayload(cwd, flags);
+
+  if (flags.has("json")) {
+    return `${JSON.stringify(payload, null, 2)}\n`;
+  }
+
+  return formatSnitchImpact(payload);
+}
+
+async function readSnitchImpactPayload(
+  cwd: string,
+  flags: ParsedArgs["flags"]
+): Promise<SnitchImpactPayload> {
+  const session = await readSession(cwd);
+  const graph = await readGraphIfExists(cwd);
+
+  if (!graph) {
+    throw new Error("No Snitch graph found. Run `pnpm snitch analyze` or `pnpm snitch init` first.");
+  }
+
+  const warnings = warningsAtOrAboveThreshold(await readWarnings(cwd, graph), "info");
+  const requestedWarningFlag = flags.get("warning");
+  const requestedWarningId =
+    requestedWarningFlag && requestedWarningFlag !== true ? requestedWarningFlag : undefined;
+  const warning = selectImpactWarning(warnings, requestedWarningId);
+  const scopedGraph = warning
+    ? scopeGraph(graph, diffGraph(graph, graph), "impacted", warning.id)
+    : graph;
+  const files = unique(
+    scopedGraph.nodes
+      .map((node) => node.file)
+      .filter((file): file is string => typeof file === "string" && file.length > 0)
+      .sort()
+  );
+  const warningNodeCount = scopedGraph.nodes.filter((node) => node.kind === "warning").length;
+
+  return {
+    ok: true,
+    cwd,
+    generatedAt: new Date().toISOString(),
+    warning: warning
+      ? {
+          id: warning.id,
+          severity: warning.severity,
+          title: warning.title,
+          message: warning.message,
+          evidence: warning.evidence,
+          repairCommand: `pnpm snitch repair-prompt --warning ${warning.id}`
+        }
+      : null,
+    counts: {
+      nodes: scopedGraph.nodes.length,
+      edges: scopedGraph.edges.length,
+      files: files.length,
+      warnings: warningNodeCount
+    },
+    files,
+    nodes: scopedGraph.nodes.map((node) => ({
+      id: node.id,
+      kind: node.kind,
+      label: node.label,
+      ...(node.file ? { file: node.file } : {}),
+      ...(typeof node.line === "number" ? { line: node.line } : {})
+    })),
+    edges: scopedGraph.edges.map((edge) => ({
+      id: edge.id,
+      from: edge.from,
+      to: edge.to,
+      kind: edge.kind,
+      ...(edge.label ? { label: edge.label } : {})
+    })),
+    nextCommands: createImpactNextCommands(session, warning)
+  };
+}
+
+function selectImpactWarning(
+  warnings: SnitchWarning[],
+  requestedWarningId: string | undefined
+): SnitchWarning | undefined {
+  if (requestedWarningId) {
+    const warning = warnings.find((item) => item.id === requestedWarningId);
+
+    if (!warning) {
+      throw new Error(`No active Snitch warning matches ${requestedWarningId}.`);
+    }
+
+    return warning;
+  }
+
+  return warnings[0];
+}
+
+function createImpactNextCommands(
+  session: SnitchSession,
+  warning: SnitchWarning | undefined
+): string[] {
+  const commands: string[] = [];
+
+  if (warning) {
+    commands.push(`pnpm snitch repair-prompt --warning ${warning.id}`);
+  }
+
+  commands.push(
+    `pnpm snitch check --target ${shellArgForPrompt(session.analysisTarget)} --fail-on medium --json`,
+    "pnpm snitch status --json"
+  );
+
+  return commands;
+}
+
+function formatSnitchImpact(payload: SnitchImpactPayload): string {
+  const warningLines = payload.warning
+    ? [
+        `- Warning: [${payload.warning.severity}] ${payload.warning.title}`,
+        `- Warning ID: ${payload.warning.id}`,
+        `- Repair: ${payload.warning.repairCommand}`
+      ]
+    : ["- No active warnings; showing the full graph scope."];
+  const fileLines = payload.files.length > 0
+    ? payload.files.map((file) => `  - ${file}`)
+    : ["  - none"];
+  const nodeLines = payload.nodes
+    .slice(0, 12)
+    .map((node) => `  - ${node.kind}: ${node.label} (${node.id})${formatNodeLocation(node)}`);
+  const edgeLines = payload.edges
+    .slice(0, 12)
+    .map((edge) => `  - ${edge.kind}: ${edge.from} -> ${edge.to}`);
+
+  return [
+    "Snitch impact",
+    ...warningLines,
+    `- Scope: ${payload.counts.nodes} nodes, ${payload.counts.edges} edges, ${payload.counts.files} files`,
+    "",
+    "Affected files:",
+    ...fileLines,
+    "",
+    "Nodes:",
+    ...(nodeLines.length > 0 ? nodeLines : ["  - none"]),
+    ...(payload.nodes.length > nodeLines.length
+      ? [`  - ${payload.nodes.length - nodeLines.length} more nodes in --json output`]
+      : []),
+    "",
+    "Edges:",
+    ...(edgeLines.length > 0 ? edgeLines : ["  - none"]),
+    ...(payload.edges.length > edgeLines.length
+      ? [`  - ${payload.edges.length - edgeLines.length} more edges in --json output`]
+      : []),
+    "",
+    "Next commands:",
+    ...payload.nextCommands.map((command) => `- ${command}`)
+  ].join("\n") + "\n";
+}
+
+function formatNodeLocation(node: SnitchImpactPayload["nodes"][number]): string {
+  if (!node.file) {
+    return "";
+  }
+
+  return typeof node.line === "number" ? ` at ${node.file}:${node.line}` : ` at ${node.file}`;
 }
 
 async function ensureInitialized(cwd: string, now: Date): Promise<void> {
@@ -2617,6 +2820,7 @@ function helpText(): string {
     "  snitch insights [--cwd <repo>] [--offline]",
     "  snitch repair-prompt [--cwd <repo>] [--warning <id>] [--all]",
     "  snitch status [--cwd <repo>] [--json]",
+    "  snitch impact [--cwd <repo>] [--warning <id>] [--json]",
     "  snitch finalize [--cwd <repo>]",
     "  snitch install-git-hooks [--cwd <repo>] [--force]",
     "  snitch publish-github [--cwd <repo>] [--repo owner/name] [--pr <number>] [--token <token>]"
