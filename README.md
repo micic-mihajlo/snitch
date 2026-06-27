@@ -11,6 +11,7 @@ This repo now includes a working first slice:
 - background CLI: `pnpm snitch init`, `event`, `status`, and `finalize`
 - generated hook adapter at `.snitch/hooks/codex-hook.mjs`
 - generated Codex, Cursor, Claude Code, and OpenCode adapter configs with `--agent all`
+- local Git hook installer: `pnpm snitch install-git-hooks`
 - privacy-preserving local event log at `.snitch/events.jsonl`
 - normalized event model with payload hashing and safe summaries
 - narrow TypeScript extractor for real repo graph generation
@@ -54,6 +55,7 @@ pnpm demo:live --offline-integrations
 pnpm demo:repair
 pnpm snitch status
 pnpm snitch finalize
+pnpm snitch install-git-hooks
 pnpm snitch publish-github --repo owner/name --pr 123
 pnpm test
 pnpm build
@@ -101,6 +103,8 @@ It does not store the raw hook payload. File-changing events refresh the configu
 - `.snitch/insights.json`
 
 `snitch finalize` also writes `.snitch/memory.json`. With Backboard credentials, it remembers active warning decisions as safe metadata and evidence hashes; without credentials, it records disabled status so the live dashboard can show the memory lane honestly.
+
+`snitch install-git-hooks` installs Snitch-managed `post-commit` and `pre-push` hooks. They refresh local `.snitch` artifacts from the repo graph and intentionally do not publish to GitHub. Existing non-Snitch hooks are left alone unless `--force` is passed.
 
 `snitch publish-github` is the PR publish plane. It reads `.snitch/pr-comment.md`, wraps it with a stable hidden marker, and creates or updates one top-level PR timeline comment through the GitHub issue comments API. It is intended for GitHub Actions or a future GitHub App, not for the coding agent runtime. See [templates/github/snitch-pr-summary.yml](templates/github/snitch-pr-summary.yml).
 

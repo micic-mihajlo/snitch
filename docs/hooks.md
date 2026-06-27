@@ -42,6 +42,7 @@ pnpm snitch init --task "Watch this coding-agent session"
 printf '{"tool_name":"apply_patch","file_path":"src/tools/issues.ts"}' | pnpm snitch event --source codex --hook PostToolUse
 pnpm snitch status
 pnpm snitch finalize
+pnpm snitch install-git-hooks
 ```
 
 `init` writes `.snitch/config.json`, `.snitch/session.json`, `.snitch/events.jsonl`, and `.snitch/hooks/codex-hook.mjs`.
@@ -94,6 +95,14 @@ Possible hooks:
 - `post-merge`: refresh base graph after pulling main.
 
 Do not rely on local Git hooks for PR publishing. Git does not know when a GitHub PR has been created unless the user uses a wrapped command.
+
+Implemented MVP:
+
+```bash
+pnpm snitch install-git-hooks
+```
+
+This installs Snitch-managed `post-commit` and `pre-push` hooks that send a `git` source event through the local hook adapter path and refresh `.snitch` artifacts. Existing unmanaged hooks are not overwritten unless `--force` is passed. The generated scripts do not reference GitHub tokens or run `publish-github`.
 
 ### 4. GitHub Actions / Webhooks
 

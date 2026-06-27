@@ -165,6 +165,8 @@ type GitHubComment = {
   html_url?: string;
 };
 
+type GitHookName = "post-commit" | "pre-push";
+
 type GitHubPublishOptions = {
   owner: string;
   repo: string;
@@ -268,6 +270,11 @@ export async function runCli(args: string[], options: RunCliOptions = {}): Promi
 
     if (command === "finalize") {
       const message = await finalizeSnitch(cwd, now);
+      return ok(message);
+    }
+
+    if (command === "install-git-hooks") {
+      const message = await installGitHooks(cwd, parsed.flags, now);
       return ok(message);
     }
 
@@ -499,6 +506,46 @@ async function finalizeSnitch(cwd: string, now: Date): Promise<string> {
     "- PR body: .snitch/pr-comment.md",
     "- Handoff: .snitch/handoff.md",
     "- Mermaid: .snitch/mermaid.mmd"
+  ].join("\n") + "\n";
+}
+
+async function installGitHooks(cwd: string, flags: ParsedArgs["flags"], now: Date): Promise<string> {
+  await ensureInitialized(cwd, now);
+
+  const hooksDir = await resolveGitHooksDir(cwd);
+  const force = flags.has("force");
+  const hookNames: GitHookName[] = ["post-commit", "pre-push"];
+  const installed: string[] = [];
+
+  await mkdir(hooksDir, { recursive: true });
+
+  const plans = await Promise.all(
+    hookNames.map(async (hookName) => {
+      const hookPath = resolve(hooksDir, hookName);
+      const current = await readAbsoluteTextIfExists(hookPath);
+
+      return { hookName, hookPath, current };
+    })
+  );
+
+  for (const plan of plans) {
+    if (plan.current && !isSnitchManagedHook(plan.current) && !force) {
+      throw new Error(
+        `Refusing to overwrite existing Git hook ${plan.hookPath}. Re-run with --force after reviewing it.`
+      );
+    }
+  }
+
+  for (const plan of plans) {
+    await writeFile(plan.hookPath, createGitHookScript(plan.hookName), "utf8");
+    await chmod(plan.hookPath, 0o755);
+    installed.push(plan.hookPath);
+  }
+
+  return [
+    "Snitch Git hooks installed.",
+    ...installed.map((path) => `- ${path}`),
+    "- Hooks refresh local .snitch artifacts only; GitHub publishing stays in Actions or explicit publish-github."
   ].join("\n") + "\n";
 }
 
@@ -1155,6 +1202,14 @@ async function readTextIfExists(cwd: string, path: string): Promise<string> {
   }
 }
 
+async function readAbsoluteTextIfExists(path: string): Promise<string> {
+  try {
+    return await readFile(path, "utf8");
+  } catch {
+    return "";
+  }
+}
+
 async function loadRuntimeEnv(cwd: string): Promise<Record<string, string>> {
   const localEnvText = await readTextIfExists(cwd, ".env");
   const localEnv = Object.fromEntries(
@@ -1635,6 +1690,53 @@ function createOpenCodePlugin(): string {
 `;
 }
 
+async function resolveGitHooksDir(cwd: string): Promise<string> {
+  const gitPath = resolve(cwd, ".git");
+
+  try {
+    const gitStat = await stat(gitPath);
+
+    if (gitStat.isDirectory()) {
+      return resolve(gitPath, "hooks");
+    }
+  } catch {
+    throw new Error("Cannot install Git hooks because .git was not found.");
+  }
+
+  const gitFile = await readFile(gitPath, "utf8");
+  const match = gitFile.match(/^gitdir:\s*(.+)\s*$/m);
+
+  if (!match?.[1]) {
+    throw new Error(`Cannot resolve Git hooks directory from ${gitPath}.`);
+  }
+
+  return resolve(cwd, match[1].trim(), "hooks");
+}
+
+function createGitHookScript(hookName: GitHookName): string {
+  const snitchRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+
+  return `#!/usr/bin/env sh
+# snitch-managed:${hookName}
+set -eu
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+payload='{"hook":"${hookName}","event":"git_${hookName.replaceAll("-", "_")}"}'
+
+if command -v pnpm >/dev/null 2>&1; then
+  printf '%s' "$payload" | pnpm --dir ${shellQuote(snitchRoot)} snitch event --cwd "$repo_root" --source git --hook "file_changed:${hookName}" >/dev/null 2>&1 || true
+fi
+`;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\"'\"'")}'`;
+}
+
+function isSnitchManagedHook(contents: string): boolean {
+  return contents.includes("# snitch-managed:");
+}
+
 function generatedConfigPaths(agents: AgentTarget[]): string[] {
   const paths: string[] = [];
 
@@ -1845,6 +1947,7 @@ function helpText(): string {
     "  snitch insights [--cwd <repo>] [--offline]",
     "  snitch status [--cwd <repo>]",
     "  snitch finalize [--cwd <repo>]",
+    "  snitch install-git-hooks [--cwd <repo>] [--force]",
     "  snitch publish-github [--cwd <repo>] [--repo owner/name] [--pr <number>] [--token <token>]"
   ].join("\n") + "\n";
 }

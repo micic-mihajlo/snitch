@@ -66,6 +66,46 @@ describe("snitch cli", () => {
     );
   });
 
+  it("installs managed local Git hooks for durable Snitch snapshots", async () => {
+    const cwd = await tempRepo();
+    await mkdir(join(cwd, ".git/hooks"), { recursive: true });
+
+    const result = await runCli(["install-git-hooks"], { cwd, now });
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("Snitch Git hooks installed");
+    expect(result.stdout).toContain(".git/hooks/post-commit");
+    expect(result.stdout).toContain(".git/hooks/pre-push");
+    const postCommit = await readFile(join(cwd, ".git/hooks/post-commit"), "utf8");
+    const prePush = await readFile(join(cwd, ".git/hooks/pre-push"), "utf8");
+    const postCommitStats = await stat(join(cwd, ".git/hooks/post-commit"));
+    const prePushStats = await stat(join(cwd, ".git/hooks/pre-push"));
+
+    expect(postCommit).toContain("# snitch-managed:post-commit");
+    expect(prePush).toContain("# snitch-managed:pre-push");
+    expect(prePush).toContain("--source git");
+    expect(prePush).toContain("file_changed:pre-push");
+    expect(prePush).not.toContain("publish-github");
+    expect(prePush).not.toContain("GITHUB_TOKEN");
+    expect(postCommitStats.mode & 0o111).toBeGreaterThan(0);
+    expect(prePushStats.mode & 0o111).toBeGreaterThan(0);
+  });
+
+  it("refuses to overwrite unmanaged local Git hooks by default", async () => {
+    const cwd = await tempRepo();
+    await mkdir(join(cwd, ".git/hooks"), { recursive: true });
+    await writeFile(join(cwd, ".git/hooks/pre-push"), "# existing team hook\n", "utf8");
+
+    const result = await runCli(["install-git-hooks"], { cwd, now });
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("Refusing to overwrite existing Git hook");
+    await expect(readFile(join(cwd, ".git/hooks/pre-push"), "utf8")).resolves.toBe(
+      "# existing team hook\n"
+    );
+    await expect(readFile(join(cwd, ".git/hooks/post-commit"), "utf8")).rejects.toThrow();
+  });
+
   it("records hook events without storing the raw payload", async () => {
     const cwd = await tempRepo();
     const payload = JSON.stringify({
