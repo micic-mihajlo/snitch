@@ -146,7 +146,7 @@ Commit message: `feat: generate snitch artifacts`
 - Create: `scripts/smoke-backboard.ts`
 - Modify: `.env.example`
 
-- [ ] **Step 1: Write failing sponsor tests**
+- [x] **Step 1: Write failing sponsor tests**
 
 Create tests that prove:
 - Cerebras prompt builder receives task intent, graph diff, warnings, and repo rules
@@ -157,7 +157,7 @@ Create tests that prove:
 Run: `pnpm --filter @snitch/graph test -- src/sponsors.test.ts`
 Expected before implementation: fails because sponsor helpers do not exist.
 
-- [ ] **Step 2: Implement sponsor helpers**
+- [x] **Step 2: Implement sponsor helpers**
 
 Add:
 - `createCerebrasNarrationInput`
@@ -168,13 +168,13 @@ Add:
 
 Network calls must be injectable for tests and must never block deterministic graph rendering.
 
-- [ ] **Step 3: Add smoke scripts**
+- [x] **Step 3: Add smoke scripts**
 
 `pnpm smoke:cerebras` performs a tiny `OK` completion using `CEREBRAS_MODEL` or `gpt-oss-120b`.
 
 `pnpm smoke:backboard` sends a tiny `OK` message using `BACKBOARD_API_KEY` and optional `BACKBOARD_ASSISTANT_ID`.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 Run:
 - `pnpm --filter @snitch/graph test -- src/sponsors.test.ts`
