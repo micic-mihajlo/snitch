@@ -71,6 +71,7 @@ type LiveSnitchState = {
   snapshot?: ReplaySnapshot;
   previousSnapshot?: ReplaySnapshot;
   artifacts?: SnitchArtifacts;
+  cwd?: string;
   integrationPanel?: {
     narration: string;
     ruleCount: number;
@@ -117,6 +118,7 @@ export function useLiveSnitch(): LiveSnitchState {
             ? current.previousSnapshot ?? current.snapshot ?? snapshot
             : current.snapshot ?? snapshot,
           artifacts,
+          cwd: apiState.cwd,
           graphSourceLabel: apiState.session?.graphSource
             ? `live ${apiState.session.graphSource}`
             : "live artifacts"

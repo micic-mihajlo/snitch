@@ -183,14 +183,23 @@ function relatedNodeIds(graph: SnitchGraph, activeId: string | undefined): Set<s
   }
 
   const related = new Set<string>([activeId]);
+  let frontier = new Set<string>([activeId]);
 
-  for (const edge of graph.edges) {
-    if (edge.from === activeId) {
-      related.add(edge.to);
+  for (let depth = 0; depth < 2; depth += 1) {
+    const next = new Set<string>();
+
+    for (const edge of graph.edges) {
+      if (frontier.has(edge.from) && !related.has(edge.to)) {
+        related.add(edge.to);
+        next.add(edge.to);
+      }
+      if (frontier.has(edge.to) && !related.has(edge.from)) {
+        related.add(edge.from);
+        next.add(edge.from);
+      }
     }
-    if (edge.to === activeId) {
-      related.add(edge.from);
-    }
+
+    frontier = next;
   }
 
   return related;
@@ -218,7 +227,8 @@ function layoutNodes(
 
   const positioned: Node<SystemNodeData>[] = [];
 
-  for (const [layer, bucket] of byLayer) {
+  for (const layer of [...byLayer.keys()].sort((left, right) => left - right)) {
+    const bucket = byLayer.get(layer) ?? [];
     const columnHeight = bucket.length * rowGap;
     const offsetY = (canvasHeight - columnHeight) / 2;
 
