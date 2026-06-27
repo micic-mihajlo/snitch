@@ -76,7 +76,7 @@ Purpose: universal fallback.
 
 Even if an agent does not support hooks, Snitch can still watch the repo:
 
-- `chokidar` observes file changes.
+- `snitch watch` fingerprints relevant source files on a fast polling loop.
 - extractor derives graph IR.
 - graph diff engine emits deltas.
 - UI updates live.

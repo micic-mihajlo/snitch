@@ -15,7 +15,7 @@ This repo now includes a working first slice:
 - normalized event model with payload hashing and safe summaries
 - narrow TypeScript extractor for real repo graph generation
 - target-aware hook refresh: file-changing events regenerate code-derived artifacts
-- local live server: `pnpm snitch watch` serves `.snitch` artifacts to the dashboard
+- local live server: `pnpm snitch watch` serves `.snitch` artifacts and refreshes the graph from file changes
 - graph scope controls for all, changed, and selected-warning impact views
 - insights artifact: `pnpm snitch insights` writes Cerebras narration, warning ranking, repair prompts, and Backboard repo-rule status
 - finalize memory lane: `pnpm snitch finalize` writes Backboard warning-decision memory with hashed evidence only
@@ -48,7 +48,7 @@ printf '{"tool_name":"apply_patch","file_path":"src/tools/create-issue.ts"}' | p
 pnpm snitch analyze --target apps/demo-app --task "Add an external issue-creation tool"
 pnpm snitch insights --offline
 pnpm snitch insights
-pnpm snitch watch --port 4767
+pnpm snitch watch --target apps/demo-app --port 4767 --scan-interval 300
 pnpm dev:live
 pnpm demo:live --offline-integrations
 pnpm demo:repair
@@ -109,6 +109,8 @@ It does not store the raw hook payload. File-changing events refresh the configu
 - `GET /health`
 - `GET /api/state`
 - `GET /api/events` for Server-Sent Events
+
+By default, `snitch watch` also polls the configured TypeScript target and regenerates `.snitch/graph.json`, `.snitch/warnings.json`, `.snitch/mermaid.mmd`, and `.snitch/pr-comment.md` when code files change. Use `--target <repo>` to override the stored analysis target, `--scan-interval <ms>` to tune refresh speed, or `--no-files` to serve artifacts without file watching.
 
 `pnpm demo:repair` is the stage-two demo move: it patches `apps/demo-app` with the audit log, secret redactor, scoped permission contract, and unauthorized-call test, then regenerates `.snitch` artifacts. After a live dashboard is running, this is the moment where the warning rail collapses to "No active Snitch warnings."
 

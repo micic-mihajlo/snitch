@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createServer, type ServerResponse } from "node:http";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -145,6 +145,20 @@ type InsightOptions = {
   now: Date;
 };
 
+type LiveServerOptions = {
+  port: number;
+  intervalMs: number;
+  fileWatch: boolean;
+  scanIntervalMs: number;
+  target?: string;
+};
+
+type WatchRefreshResult = {
+  status: "updated" | "kept-last-good";
+  target: string;
+  message: string;
+};
+
 type GitHubComment = {
   id: number;
   body?: string;
@@ -216,13 +230,29 @@ export async function runCli(args: string[], options: RunCliOptions = {}): Promi
     if (command === "watch") {
       const port = parsePort(parsed.flags.get("port"));
       const intervalMs = parseInterval(parsed.flags.get("interval"));
-      const url = await startLiveServer(cwd, port, intervalMs);
+      const targetFlag = parsed.flags.get("target");
+      const target = targetFlag && targetFlag !== true ? resolve(cwd, targetFlag) : undefined;
+      const fileWatch = !parsed.flags.has("no-files");
+      const scanIntervalMs = parseScanInterval(parsed.flags.get("scan-interval"));
+      const liveOptions: LiveServerOptions = {
+        port,
+        intervalMs,
+        fileWatch,
+        scanIntervalMs
+      };
+
+      if (target) {
+        liveOptions.target = target;
+      }
+
+      const url = await startLiveServer(cwd, liveOptions);
       return ok(
         [
           "Snitch live server started.",
           `- URL: ${url}`,
           "- State: /api/state",
-          "- Events: /api/events"
+          "- Events: /api/events",
+          `- File watcher: ${fileWatch ? `enabled (${scanIntervalMs}ms)` : "disabled"}`
         ].join("\n") + "\n"
       );
     }
@@ -501,7 +531,7 @@ async function ensureDirs(cwd: string): Promise<void> {
   await mkdir(resolve(cwd, ".snitch/hooks"), { recursive: true });
 }
 
-async function startLiveServer(cwd: string, port: number, intervalMs: number): Promise<string> {
+async function startLiveServer(cwd: string, options: LiveServerOptions): Promise<string> {
   const server = createServer(async (request, response) => {
     const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
 
@@ -527,7 +557,7 @@ async function startLiveServer(cwd: string, port: number, intervalMs: number): P
     }
 
     if (request.method === "GET" && requestUrl.pathname === "/api/events") {
-      handleLiveEvents(cwd, response, intervalMs);
+      handleLiveEvents(cwd, response, options.intervalMs);
       request.on("close", () => response.end());
       return;
     }
@@ -537,16 +567,131 @@ async function startLiveServer(cwd: string, port: number, intervalMs: number): P
 
   await new Promise<void>((resolveListen, rejectListen) => {
     server.once("error", rejectListen);
-    server.listen(port, "127.0.0.1", () => {
+    server.listen(options.port, "127.0.0.1", () => {
       server.off("error", rejectListen);
       resolveListen();
     });
   });
 
+  const fileRefreshOptions: {
+    target?: string;
+    scanIntervalMs: number;
+  } = {
+    scanIntervalMs: options.scanIntervalMs
+  };
+
+  if (options.target) {
+    fileRefreshOptions.target = options.target;
+  }
+
+  const stopFileWatcher = options.fileWatch
+    ? startFileRefreshLoop(cwd, fileRefreshOptions)
+    : undefined;
+  server.on("close", () => stopFileWatcher?.());
   const address = server.address();
-  const actualPort = typeof address === "object" && address ? address.port : port;
+  const actualPort = typeof address === "object" && address ? address.port : options.port;
 
   return `http://127.0.0.1:${actualPort}`;
+}
+
+function startFileRefreshLoop(
+  cwd: string,
+  input: {
+    target?: string;
+    scanIntervalMs: number;
+  }
+): () => void {
+  let lastFingerprint = "";
+  let running = false;
+  let stopped = false;
+
+  async function scan(): Promise<void> {
+    if (running || stopped) {
+      return;
+    }
+
+    running = true;
+    try {
+      const target = await resolveWatchTarget(cwd, input.target);
+      const fingerprint = await fingerprintWatchTarget(target);
+
+      if (fingerprint !== lastFingerprint) {
+        lastFingerprint = fingerprint;
+        await refreshWatchedTarget(cwd, {
+          target,
+          now: new Date()
+        });
+      }
+    } catch {
+      // The live server keeps serving the last valid graph. Refresh errors are persisted by refreshWatchedTarget when possible.
+    } finally {
+      running = false;
+    }
+  }
+
+  void scan();
+  const interval = setInterval(() => void scan(), input.scanIntervalMs);
+
+  return () => {
+    stopped = true;
+    clearInterval(interval);
+  };
+}
+
+export async function refreshWatchedTarget(
+  cwd: string,
+  input: {
+    target?: string;
+    now: Date;
+  }
+): Promise<WatchRefreshResult> {
+  await ensureInitialized(cwd, input.now);
+
+  const session = await readSession(cwd);
+  const config = await readConfig(cwd);
+  const target = await resolveWatchTarget(cwd, input.target ?? resolveStoredTarget(cwd, session.analysisTarget ?? config.analysis.target));
+
+  try {
+    const analysis = await writeTypeScriptArtifacts(cwd, {
+      target,
+      task: session.task,
+      now: input.now,
+      runId: session.runId
+    });
+    const updatedSession: SnitchSession = {
+      ...session,
+      status: session.status === "finalized" ? "finalized" : "running",
+      lastEventAt: input.now.toISOString(),
+      snapshotId: analysis.snapshot.id,
+      graphSource: "typescript",
+      analysisTarget: analysis.target,
+      lastAnalyzedAt: analysis.analyzedAt
+    };
+
+    delete updatedSession.lastAnalysisError;
+    await writeJson(cwd, ".snitch/session.json", updatedSession);
+
+    return {
+      status: "updated",
+      target,
+      message: `refreshed from file watcher target ${analysis.target}`
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const updatedSession: SnitchSession = {
+      ...session,
+      lastEventAt: input.now.toISOString(),
+      lastAnalysisError: message
+    };
+
+    await writeJson(cwd, ".snitch/session.json", updatedSession);
+
+    return {
+      status: "kept-last-good",
+      target,
+      message: `kept last valid graph; watcher extraction failed (${message})`
+    };
+  }
 }
 
 export async function readLiveState(cwd: string): Promise<LiveState> {
@@ -907,6 +1052,79 @@ function parsePositiveInt(value: string | true | undefined): number | undefined 
 
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+async function resolveWatchTarget(cwd: string, target?: string): Promise<string> {
+  if (target) {
+    return resolveStoredTarget(cwd, target);
+  }
+
+  const session = await readSession(cwd);
+  const config = await readConfig(cwd);
+
+  return resolveStoredTarget(cwd, session.analysisTarget ?? config.analysis.target);
+}
+
+async function fingerprintWatchTarget(target: string): Promise<string> {
+  const files = await listWatchableFiles(target);
+  const entries = await Promise.all(
+    files.map(async (file) => {
+      const fileStat = await stat(file);
+
+      return {
+        file: relative(target, file),
+        size: fileStat.size,
+        mtimeMs: fileStat.mtimeMs
+      };
+    })
+  );
+
+  return hashJson(entries.sort((left, right) => left.file.localeCompare(right.file)));
+}
+
+async function listWatchableFiles(root: string): Promise<string[]> {
+  const files: string[] = [];
+
+  async function visit(directory: string): Promise<void> {
+    const entries = await readdir(directory, { withFileTypes: true });
+
+    await Promise.all(
+      entries.map(async (entry) => {
+        const entryPath = resolve(directory, entry.name);
+
+        if (entry.isDirectory()) {
+          if (!ignoredWatchDirectory(entry.name)) {
+            await visit(entryPath);
+          }
+          return;
+        }
+
+        if (entry.isFile() && watchableCodePath(entry.name)) {
+          files.push(entryPath);
+        }
+      })
+    );
+  }
+
+  await visit(root);
+
+  return files;
+}
+
+function ignoredWatchDirectory(name: string): boolean {
+  return new Set([
+    ".git",
+    ".next",
+    ".snitch",
+    "coverage",
+    "dist",
+    "node_modules",
+    "playwright-report"
+  ]).has(name);
+}
+
+function watchableCodePath(path: string): boolean {
+  return /\.(cjs|cts|js|jsx|json|mjs|mts|ts|tsx)$/.test(path);
 }
 
 function sendJson(response: ServerResponse, status: number, value: unknown): void {
@@ -1590,6 +1808,15 @@ function parseInterval(value: string | true | undefined): number {
   return Number.isInteger(interval) && interval >= 100 ? interval : 750;
 }
 
+function parseScanInterval(value: string | true | undefined): number {
+  if (!value || value === true) {
+    return 600;
+  }
+
+  const interval = Number(value);
+  return Number.isInteger(interval) && interval >= 150 ? interval : 600;
+}
+
 function isAgentTarget(value: string): value is AgentTarget {
   return value === "codex" || value === "cursor" || value === "claude" || value === "opencode";
 }
@@ -1614,7 +1841,7 @@ function helpText(): string {
     "  snitch init [--cwd <repo>] [--agent codex|cursor|claude|opencode|all] [--target <ts-repo>] [--task <task>]",
     "  snitch event [--cwd <repo>] [--source <agent>] [--hook <hook>] < stdin-json",
     "  snitch analyze [--cwd <output-repo>] [--target <ts-repo>] [--task <task>]",
-    "  snitch watch [--cwd <repo>] [--port <port>] [--interval <ms>]",
+    "  snitch watch [--cwd <repo>] [--target <ts-repo>] [--port <port>] [--interval <ms>] [--scan-interval <ms>] [--no-files]",
     "  snitch insights [--cwd <repo>] [--offline]",
     "  snitch status [--cwd <repo>]",
     "  snitch finalize [--cwd <repo>]",

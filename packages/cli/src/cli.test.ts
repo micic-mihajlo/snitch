@@ -1,8 +1,8 @@
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { readLiveState, runCli } from "./cli";
+import { readLiveState, refreshWatchedTarget, runCli } from "./cli";
 
 const tempDirs: string[] = [];
 const now = new Date("2026-06-27T12:00:00.000Z");
@@ -181,6 +181,48 @@ describe("snitch cli", () => {
     );
     expect(state.artifacts.mermaid).toContain("tool_create_issue");
     expect(state.artifacts.prComment).toContain("Snitch Review");
+  });
+
+  it("refreshes watched targets after filesystem changes without an agent hook", async () => {
+    const cwd = await tempRepo();
+    const target = join(cwd, "demo-target");
+
+    await cp(demoRoot, target, { recursive: true });
+    await runCli(["init", "--target", target, "--task", "Wire an issue tool"], {
+      cwd,
+      now
+    });
+    await runCli(["analyze", "--target", target, "--task", "Wire an issue tool"], {
+      cwd,
+      now
+    });
+    await mkdir(join(target, "src/lib"), { recursive: true });
+    await writeFile(
+      join(target, "src/lib/tool-audit-log.ts"),
+      [
+        "export const toolAuditLog = {",
+        "  async write(record: unknown) {",
+        "    return record;",
+        "  }",
+        "};",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const result = await refreshWatchedTarget(cwd, {
+      target,
+      now: new Date("2026-06-27T12:04:00.000Z")
+    });
+    const state = await readLiveState(cwd);
+
+    expect(result.status).toBe("updated");
+    expect(state.graph.nodes.some((node) => node.id === "service:tool_audit_log")).toBe(true);
+    expect(state.graph.nodes.some((node) => node.label === "Tool audit log")).toBe(true);
+    expect(state.session).toMatchObject({
+      graphSource: "typescript",
+      lastAnalyzedAt: "2026-06-27T12:04:00.000Z"
+    });
   });
 
   it("writes offline insight artifacts for the live dashboard", async () => {

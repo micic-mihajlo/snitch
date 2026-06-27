@@ -31,7 +31,7 @@ if (prepareOnly) {
 }
 
 const children: ChildProcess[] = [];
-const watch = spawnManaged("pnpm", ["snitch", "watch", "--port", watchPort], {
+const watch = spawnManaged("pnpm", ["snitch", "watch", "--port", watchPort, "--scan-interval", "300"], {
   VITE_SNITCH_LIVE_URL: liveUrl
 });
 const web = spawnManaged(
