@@ -28,6 +28,7 @@ Useful commands:
 ```bash
 pnpm test
 pnpm build
+pnpm verify:browser
 pnpm demo:artifacts
 pnpm smoke:cerebras
 pnpm smoke:backboard

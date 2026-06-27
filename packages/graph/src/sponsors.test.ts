@@ -53,6 +53,28 @@ describe("Cerebras sponsor lane", () => {
     expect(result.text).toBe(createStaticNarration(diff, reviewSnapshot.warnings));
   });
 
+  it("falls back instead of throwing when narration input is malformed", async () => {
+    const result = await narrateWithCerebras({
+      apiKey: "test-key",
+      model: "gpt-oss-120b",
+      input: {
+        messages: [
+          { role: "system", content: "system" },
+          { role: "user", content: "{not json" }
+        ]
+      },
+      fetcher: async () => {
+        throw new Error("network offline");
+      }
+    });
+
+    expect(result).toEqual({
+      status: "fallback",
+      model: "gpt-oss-120b",
+      text: "Snitch saw 0 added nodes, 0 changed nodes, and 0 added edges. No active warnings."
+    });
+  });
+
   it("reports disabled when no Cerebras key is present", async () => {
     const input = createCerebrasNarrationInput({
       task: "Add the external issue-creation tool.",
@@ -99,12 +121,19 @@ describe("Backboard sponsor lane", () => {
     });
   });
 
-  it("records warning decisions through Backboard when configured", async () => {
+  it("records warning decisions through Backboard without sending raw evidence", async () => {
     const calls: Array<{ url: string; body: string }> = [];
+    const warning = {
+      ...reviewSnapshot.warnings[0],
+      evidence: [
+        "provider error includes secret SECRET_DO_NOT_SEND",
+        "payload.path=/private/tmp/issue-body.json"
+      ]
+    };
     const result = await rememberBackboardWarningDecision({
       apiKey: "test-key",
       assistantId: "assistant-1",
-      warning: reviewSnapshot.warnings[0],
+      warning,
       decision: "accepted",
       fetcher: async (url, init) => {
         calls.push({ url, body: String(init?.body ?? "") });
@@ -117,5 +146,8 @@ describe("Backboard sponsor lane", () => {
     expect(calls[0]?.url).toBe("https://app.backboard.io/api/threads/messages");
     expect(calls[0]?.body).toContain("accepted");
     expect(calls[0]?.body).toContain("No audit trail for external tool calls");
+    expect(calls[0]?.body).toContain("evidenceHashes");
+    expect(calls[0]?.body).not.toContain("SECRET_DO_NOT_SEND");
+    expect(calls[0]?.body).not.toContain("/private/tmp/issue-body.json");
   });
 });

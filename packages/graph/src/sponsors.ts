@@ -1,4 +1,4 @@
-import { diffGraph } from "./diff";
+import { diffGraph, hashEvidence } from "./diff";
 import type { GraphDiff, ReplaySnapshot, SnitchWarning } from "./types";
 
 export type CerebrasMessage = {
@@ -196,7 +196,14 @@ export async function rememberBackboardWarningDecision(input: {
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        content: `Snitch warning decision: ${input.decision}\nWarning: ${input.warning.title}\nEvidence: ${input.warning.evidence.join("; ")}`,
+        content: JSON.stringify({
+          type: "snitch_warning_decision",
+          decision: input.decision,
+          warningId: input.warning.id,
+          severity: input.warning.severity,
+          title: input.warning.title,
+          evidenceHashes: input.warning.evidence.map((evidence) => hashEvidence(evidence))
+        }),
         stream: false,
         memory: "Auto",
         ...(input.assistantId ? { assistant_id: input.assistantId } : {})
@@ -229,10 +236,7 @@ export function createNarrationForSnapshot(input: {
 
 function createStaticNarrationFromInput(input: CerebrasNarrationInput): string {
   const content = input.messages.find((message) => message.role === "user")?.content ?? "{}";
-  const parsed = JSON.parse(content) as {
-    diffSummary?: GraphDiff["summary"];
-    warnings?: SnitchWarning[];
-  };
+  const parsed = parseNarrationInput(content);
 
   return createStaticNarration(
     {
@@ -255,6 +259,20 @@ function createStaticNarrationFromInput(input: CerebrasNarrationInput): string {
     },
     parsed.warnings ?? []
   );
+}
+
+function parseNarrationInput(content: string): {
+  diffSummary?: GraphDiff["summary"];
+  warnings?: SnitchWarning[];
+} {
+  try {
+    return JSON.parse(content) as {
+      diffSummary?: GraphDiff["summary"];
+      warnings?: SnitchWarning[];
+    };
+  } catch {
+    return {};
+  }
 }
 
 function extractRules(content: string): string[] {

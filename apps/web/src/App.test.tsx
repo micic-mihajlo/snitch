@@ -14,6 +14,8 @@ describe("Snitch dashboard", () => {
     expect(screen.getByText("PR Artifact")).toBeInTheDocument();
     expect(screen.getByText("Cerebras")).toBeInTheDocument();
     expect(screen.getByText("Backboard")).toBeInTheDocument();
+    expect(screen.getByText("static fallback")).toBeInTheDocument();
+    expect(screen.getByText("not connected / 0 repo rules")).toBeInTheDocument();
     expect(screen.getByText("Create issue tool")).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /No audit trail for external tool calls/i })

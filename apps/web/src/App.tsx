@@ -13,6 +13,7 @@ const task =
 
 export default function App() {
   const replay = useReplay();
+  const [createdAt] = useState(() => new Date().toISOString());
   const [selectedWarningId, setSelectedWarningId] = useState<string | undefined>(
     replay.currentSnapshot.warnings[0]?.id
   );
@@ -28,11 +29,11 @@ export default function App() {
       buildSnitchArtifacts({
         replay: replay.snapshots,
         reviewSnapshot: replay.reviewSnapshot,
-        createdAt: "2026-06-27T00:00:00.000Z",
+        createdAt,
         runId: "snitch-ui-preview",
         task
       }),
-    [replay.reviewSnapshot, replay.snapshots]
+    [createdAt, replay.reviewSnapshot, replay.snapshots]
   );
   const narration = useMemo(
     () => createStaticNarration(diff, replay.currentSnapshot.warnings),
@@ -94,7 +95,12 @@ export default function App() {
           snapshots={replay.snapshots}
           currentSnapshotId={replay.currentSnapshot.id}
         />
-        <SponsorLane narration={narration} ruleCount={2} cerebrasStatus="ready" backboardStatus="memory on" />
+        <SponsorLane
+          narration={narration}
+          ruleCount={0}
+          cerebrasStatus="static fallback"
+          backboardStatus="not connected"
+        />
         <ArtifactPanel artifacts={artifacts} />
       </section>
     </main>
