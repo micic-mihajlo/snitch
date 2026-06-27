@@ -52,25 +52,46 @@ This repo now includes a working first slice:
 
 See [docs/strategy-2026-06-27.md](docs/strategy-2026-06-27.md) for the researched next build direction.
 
-## Run It
+## Install
 
 ```bash
-pnpm install
+pnpm install            # fresh clone is runnable immediately, no build step required
+pnpm install:cli        # builds the bundle and links `snitch` into ~/.local/bin
+```
+
+`pnpm install:cli` puts a real `snitch` binary on your PATH so you can run it from inside
+any repo. If `~/.local/bin` is not on your PATH, the installer prints the one line to add.
+(Requires Node >= 20.)
+
+## Use It On Your Own Repo
+
+```bash
+cd ~/your-project
+snitch init --agent claude --task "<what the agent is building>"   # wire hooks + .snitch state
+snitch watch --insights                                            # live dashboard data at :4767
+snitch briefing                                                    # context for the agent, any time
+snitch check --fail-on medium                                      # gate before handoff
+```
+
+When Snitch reports a warning:
+
+```bash
+snitch repair-prompt --warning <id>      # paste-ready fix for the coding agent
+snitch verify-repair --warning <id>      # exits 0 once the warning is gone
+```
+
+`init` persists your task and target, so later commands don't need them re-typed. Run
+`snitch --help` for the full command list and `snitch <command> --help` for options.
+
+## Try The Demo
+
+```bash
 pnpm demo:live
 ```
 
 `pnpm demo:live` prepares code-derived artifacts, writes integration insights, starts `snitch watch` at `http://127.0.0.1:4767`, and starts the dashboard pointed at that local server. Plain `pnpm dev` stays in clean replay fallback mode. The first screen is the Snitch inspection surface: live graph, ranked warning rail, timeline, integration panel, and PR artifact preview.
 
-Daily workflow:
-
-```bash
-pnpm snitch init --agent all --target apps/demo-app --task "Watch this coding-agent session"
-pnpm snitch watch --target apps/demo-app --insights
-pnpm snitch briefing --task "Add an external issue-creation tool"
-pnpm snitch check --target apps/demo-app --task "Add an external issue-creation tool"
-pnpm snitch repair-prompt --warning warning:permission_scope_missing:create_issue
-pnpm snitch verify-repair --warning warning:permission_scope_missing:create_issue --target apps/demo-app --task "Add an external issue-creation tool"
-```
+Working from inside this checkout (without the global install), every command is also available as `pnpm snitch <command>`.
 
 Advanced surfaces exist for agent runtimes, MCP clients, CI, and PR publishing: `event`, `mcp`, `doctor`, `status`, `changed`, `trace`, `impact`, `findings`, `next-action`, `insights`, `finalize`, `install-git-hooks`, and `publish-github`.
 

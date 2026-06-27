@@ -372,6 +372,47 @@ h2 {
   line-height: 1.5;
 }
 
+.repair-panel-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.copy-button {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  color: var(--paper);
+  background: var(--coal);
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.copy-button:hover {
+  border-color: var(--acid);
+  color: var(--acid);
+}
+
+.artifact-block {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+}
+
+.artifact-block figcaption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
 .timeline-list {
   display: grid;
   gap: 0;

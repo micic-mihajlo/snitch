@@ -1,6 +1,7 @@
 import { ShieldAlert } from "lucide-react";
 import type { SnitchWarning } from "@snitch/graph";
 import type { RankedWarningView } from "../lib/useLiveSnitch";
+import { CopyButton } from "./CopyButton";
 
 type Props = {
   warnings: SnitchWarning[];
@@ -53,7 +54,12 @@ export function WarningRail({ warnings, selectedWarning, rankingByWarningId, onS
 
       {selectedWarning ? (
         <div className="repair-panel" role="region" aria-label="Selected repair prompt">
-          <p className="eyebrow">Repair prompt</p>
+          <div className="repair-panel-heading">
+            <p className="eyebrow">Repair prompt</p>
+            {selectedWarning.repairPrompt ? (
+              <CopyButton value={selectedWarning.repairPrompt} label="Copy prompt" />
+            ) : null}
+          </div>
           {selectedRanking ? <p className="rank-reason">{selectedRanking.reason}</p> : null}
           <p>{selectedWarning.repairPrompt}</p>
         </div>
