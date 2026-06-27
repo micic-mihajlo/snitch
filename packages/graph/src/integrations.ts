@@ -1,5 +1,5 @@
 import { diffGraph, hashEvidence } from "./diff";
-import type { GraphDiff, ReplaySnapshot, SnitchWarning } from "./types";
+import type { EdgeKind, GraphDiff, GraphEdge, GraphNode, NodeKind, ReplaySnapshot, SnitchGraph, SnitchWarning } from "./types";
 
 export type CerebrasMessage = {
   role: "system" | "user";
@@ -11,6 +11,10 @@ export type CerebrasNarrationInput = {
 };
 
 export type CerebrasWarningTriageInput = {
+  messages: CerebrasMessage[];
+};
+
+export type CerebrasDiagramInput = {
   messages: CerebrasMessage[];
 };
 
@@ -42,6 +46,13 @@ export type RankedWarning = {
 export type CerebrasWarningTriageResult = {
   status: IntegrationStatus;
   rankedWarnings: RankedWarning[];
+  model?: string;
+};
+
+export type CerebrasDiagramResult = {
+  status: IntegrationStatus;
+  graph: SnitchGraph;
+  summary: string;
   model?: string;
 };
 
@@ -131,6 +142,79 @@ export function createCerebrasWarningTriageInput(input: {
               evidence: warning.evidence,
               repairPrompt: warning.repairPrompt
             })),
+            repoRules: input.repoRules
+          },
+          null,
+          2
+        )
+      }
+    ]
+  };
+}
+
+export function createCerebrasDiagramInput(input: {
+  task: string;
+  graph: SnitchGraph;
+  warnings: SnitchWarning[];
+  repoRules: string[];
+  changedFiles?: Array<{ path: string; status: string; targetPath?: string }>;
+}): CerebrasDiagramInput {
+  return {
+    messages: [
+      {
+        role: "system",
+        content:
+          "You are Snitch's ultra-fast diagram lane. Create a compact developer-facing architecture diagram from provided graph facts. Return strict JSON only. Never invent node ids, files, warnings, or edges."
+      },
+      {
+        role: "user",
+        content: JSON.stringify(
+          {
+            task: input.task,
+            expectedShape: {
+              title: "short title",
+              summary: "one sentence explaining what changed or what matters",
+              nodes: [
+                {
+                  id: "must be one of graph.nodes[].id",
+                  label: "short label, preferably existing label"
+                }
+              ],
+              edges: [
+                {
+                  from: "must be one of selected node ids",
+                  to: "must be one of selected node ids",
+                  kind: "must match an existing edge kind between from and to"
+                }
+              ]
+            },
+            limits: {
+              nodes: 8,
+              edges: 12
+            },
+            graph: {
+              title: input.graph.title,
+              nodes: input.graph.nodes.map((node) => ({
+                id: node.id,
+                kind: node.kind,
+                label: node.label,
+                file: node.file,
+                line: node.line
+              })),
+              edges: input.graph.edges.map((edge) => ({
+                from: edge.from,
+                to: edge.to,
+                kind: edge.kind,
+                label: edge.label
+              }))
+            },
+            warnings: input.warnings.map((warning) => ({
+              id: warning.id,
+              severity: warning.severity,
+              title: warning.title,
+              evidence: warning.evidence
+            })),
+            changedFiles: input.changedFiles ?? [],
             repoRules: input.repoRules
           },
           null,
@@ -255,6 +339,66 @@ export async function rankWarningsWithCerebras(options: {
   }
 }
 
+export async function diagramWithCerebras(options: {
+  apiKey?: string;
+  model: string;
+  input: CerebrasDiagramInput;
+  graph: SnitchGraph;
+  warnings: SnitchWarning[];
+  fetcher?: typeof fetch;
+}): Promise<CerebrasDiagramResult> {
+  const fallback = createFallbackDiagram(options.graph, options.warnings);
+
+  if (!options.apiKey?.trim()) {
+    return {
+      status: "disabled",
+      ...fallback
+    };
+  }
+
+  try {
+    const response = await (options.fetcher ?? fetch)("https://api.cerebras.ai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${options.apiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: options.model,
+        messages: options.input.messages,
+        max_completion_tokens: cerebrasMaxCompletionTokens(options.model, 700, 3000),
+        response_format: { type: "json_object" },
+        temperature: 0
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`Cerebras responded with ${response.status}`);
+    }
+
+    const payload = (await response.json()) as {
+      choices?: Array<{ message?: { content?: string } }>;
+    };
+    const parsed = parseDiagramGraph(payload.choices?.[0]?.message?.content, options.graph);
+
+    if (!parsed.graph.nodes.length) {
+      throw new Error("Cerebras returned an empty diagram");
+    }
+
+    return {
+      status: "ok",
+      model: options.model,
+      ...parsed
+    };
+  } catch {
+    return {
+      status: "fallback",
+      model: options.model,
+      ...fallback
+    };
+  }
+}
+
 function cerebrasMaxCompletionTokens(model: string, standard: number, reasoning: number): number {
   return model.toLowerCase().includes("glm") ? reasoning : standard;
 }
@@ -285,6 +429,100 @@ export function createFallbackWarningRankings(warnings: SnitchWarning[]): Ranked
       reason: warning.message,
       repairPrompt: warning.repairPrompt ?? `Repair ${warning.title}.`
     }));
+}
+
+export function createFallbackDiagram(graph: SnitchGraph, warnings: SnitchWarning[]): {
+  graph: SnitchGraph;
+  summary: string;
+} {
+  const warningIds = new Set(warnings.map((warning) => warning.id));
+  const seedNodeIds = new Set<string>();
+
+  for (const node of graph.nodes) {
+    if (node.kind === "warning" && warningIds.has(node.id)) {
+      seedNodeIds.add(node.id);
+    }
+  }
+
+  for (const edge of graph.edges) {
+    if (seedNodeIds.has(edge.from)) {
+      seedNodeIds.add(edge.to);
+    }
+    if (seedNodeIds.has(edge.to)) {
+      seedNodeIds.add(edge.from);
+    }
+  }
+
+  const selectedIds = seedNodeIds.size > 0
+    ? seedNodeIds
+    : fallbackImportantNodeIds(graph);
+  const nodes = graph.nodes
+    .filter((node) => selectedIds.has(node.id))
+    .slice(0, 8);
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const edges = graph.edges
+    .filter((edge) => nodeIds.has(edge.from) && nodeIds.has(edge.to))
+    .slice(0, 12);
+
+  const scopedGraph: SnitchGraph = {
+    id: `${graph.id}:diagram`,
+    title: "Cerebras diagram fallback",
+    meta: {
+      sourceGraphId: graph.id
+    },
+    nodes,
+    edges
+  };
+
+  if (graph.generatedAt) {
+    scopedGraph.generatedAt = graph.generatedAt;
+  }
+
+  return {
+    summary:
+      warnings.length > 0
+        ? `${warnings.length} active warning${warnings.length === 1 ? "" : "s"} around the current change.`
+        : "Changed files have no active Snitch findings; showing the most connected services and tools.",
+    graph: scopedGraph
+  };
+}
+
+function fallbackImportantNodeIds(graph: SnitchGraph): Set<string> {
+  const degree = new Map<string, number>();
+
+  for (const edge of graph.edges) {
+    degree.set(edge.from, (degree.get(edge.from) ?? 0) + 1);
+    degree.set(edge.to, (degree.get(edge.to) ?? 0) + 1);
+  }
+
+  return new Set(
+    [...graph.nodes]
+      .sort((left, right) =>
+        fallbackNodeRank(left) - fallbackNodeRank(right) ||
+        (degree.get(right.id) ?? 0) - (degree.get(left.id) ?? 0) ||
+        left.id.localeCompare(right.id)
+      )
+      .slice(0, 6)
+      .map((node) => node.id)
+  );
+}
+
+function fallbackNodeRank(node: GraphNode): number {
+  const ranks: Record<NodeKind, number> = {
+    service: 0,
+    tool: 1,
+    external: 2,
+    contract: 3,
+    schema: 4,
+    endpoint: 5,
+    database: 6,
+    agent: 7,
+    warning: 8,
+    test: 9,
+    env: 10
+  };
+
+  return ranks[node.kind];
 }
 
 export async function loadBackboardRepoRules(input: {
@@ -472,6 +710,129 @@ function parseRankedWarnings(content: string | undefined, warnings: SnitchWarnin
   }
 
   return result.sort((left, right) => left.rank - right.rank);
+}
+
+function parseDiagramGraph(content: string | undefined, sourceGraph: SnitchGraph): {
+  graph: SnitchGraph;
+  summary: string;
+} {
+  const parsed = parseJsonObject(extractJson(content ?? "")) as {
+    title?: unknown;
+    summary?: unknown;
+    nodes?: Array<{ id?: unknown; label?: unknown }>;
+    edges?: Array<{ from?: unknown; to?: unknown; kind?: unknown; label?: unknown }>;
+  };
+  const sourceNodeById = new Map(sourceGraph.nodes.map((node) => [node.id, node]));
+  const sourceEdgeKeys = new Set(sourceGraph.edges.map((edge) => diagramEdgeKey(edge.from, edge.to, edge.kind)));
+  const nodes: GraphNode[] = [];
+  const selectedIds = new Set<string>();
+
+  for (const item of Array.isArray(parsed.nodes) ? parsed.nodes : []) {
+    if (typeof item.id !== "string" || selectedIds.has(item.id)) {
+      continue;
+    }
+
+    const sourceNode = sourceNodeById.get(item.id);
+
+    if (!sourceNode) {
+      continue;
+    }
+
+    const label = typeof item.label === "string" && item.label.trim()
+      ? item.label.trim()
+      : sourceNode.label;
+    nodes.push({
+      ...sourceNode,
+      label,
+      hash: hashEvidence(JSON.stringify({ id: sourceNode.id, label, hash: sourceNode.hash }))
+    });
+    selectedIds.add(item.id);
+
+    if (nodes.length >= 8) {
+      break;
+    }
+  }
+
+  const edges: GraphEdge[] = [];
+  const seenEdges = new Set<string>();
+
+  for (const item of Array.isArray(parsed.edges) ? parsed.edges : []) {
+    if (
+      typeof item.from !== "string" ||
+      typeof item.to !== "string" ||
+      typeof item.kind !== "string" ||
+      !selectedIds.has(item.from) ||
+      !selectedIds.has(item.to) ||
+      !isEdgeKind(item.kind)
+    ) {
+      continue;
+    }
+
+    const key = diagramEdgeKey(item.from, item.to, item.kind);
+
+    if (!sourceEdgeKeys.has(key) || seenEdges.has(key)) {
+      continue;
+    }
+
+    const label = typeof item.label === "string" && item.label.trim() ? item.label.trim() : undefined;
+    const edge: GraphEdge = {
+      id: `diagram:${item.from}:${item.kind}:${item.to}`,
+      from: item.from,
+      to: item.to,
+      kind: item.kind,
+      hash: hashEvidence(JSON.stringify({ from: item.from, to: item.to, kind: item.kind, label }))
+    };
+
+    if (label) {
+      edge.label = label;
+    }
+
+    edges.push(edge);
+    seenEdges.add(key);
+
+    if (edges.length >= 12) {
+      break;
+    }
+  }
+
+  return {
+    summary:
+      typeof parsed.summary === "string" && parsed.summary.trim()
+        ? parsed.summary.trim()
+        : "Cerebras selected the most relevant graph path.",
+    graph: {
+      id: `${sourceGraph.id}:cerebras-diagram`,
+      title:
+        typeof parsed.title === "string" && parsed.title.trim()
+          ? parsed.title.trim()
+          : "Cerebras diagram",
+      generatedAt: new Date().toISOString(),
+      meta: {
+        sourceGraphId: sourceGraph.id
+      },
+      nodes,
+      edges
+    }
+  };
+}
+
+function diagramEdgeKey(from: string, to: string, kind: EdgeKind): string {
+  return `${from}\u0000${kind}\u0000${to}`;
+}
+
+function isEdgeKind(value: string): value is EdgeKind {
+  return [
+    "calls",
+    "validates",
+    "reads",
+    "writes",
+    "uses_secret",
+    "covers",
+    "registers",
+    "satisfies",
+    "violates",
+    "missing"
+  ].includes(value);
 }
 
 function extractJson(content: string): string {

@@ -816,6 +816,43 @@ describe("snitch cli", () => {
     expect(human.stdout).toContain("src/tools/create-issue.ts");
   });
 
+  it("includes committed branch changes when diffing against a base ref", async () => {
+    const cwd = await tempRepo();
+    const target = join(cwd, "demo-app");
+
+    await cp(demoRoot, target, { recursive: true });
+    await git(cwd, ["init"]);
+    await git(cwd, ["config", "user.email", "snitch@example.test"]);
+    await git(cwd, ["config", "user.name", "Snitch Test"]);
+    await git(cwd, ["add", "demo-app"]);
+    await git(cwd, ["commit", "-m", "baseline"]);
+    await git(cwd, ["branch", "base"]);
+
+    const toolPath = join(target, "src/tools/create-issue.ts");
+    const originalTool = await readFile(toolPath, "utf8");
+    await writeFile(toolPath, `${originalTool}\n// committed issue tool touch\n`, "utf8");
+    await git(cwd, ["add", "demo-app/src/tools/create-issue.ts"]);
+    await git(cwd, ["commit", "-m", "touch issue tool"]);
+    await runCli(["analyze", "--target", target, "--task", "Wire an issue tool"], { cwd, now });
+
+    const result = await runCli(["changed", "--base", "base", "--json"], { cwd });
+    const parsed = JSON.parse(result.stdout);
+
+    expect(result.code).toBe(0);
+    expect(parsed.git).toMatchObject({
+      available: true,
+      baseRef: "base",
+      diffMode: "base"
+    });
+    expect(parsed.changedFiles).toHaveLength(1);
+    expect(parsed.changedFiles[0]).toMatchObject({
+      path: "demo-app/src/tools/create-issue.ts",
+      targetPath: "src/tools/create-issue.ts",
+      inAnalysisTarget: true
+    });
+    expect(parsed.counts.changedFindings).toBeGreaterThan(0);
+  });
+
   it("serves Snitch tools over the MCP JSON-RPC handler", async () => {
     const cwd = await tempRepo();
 
@@ -1810,6 +1847,17 @@ describe("snitch cli", () => {
     const parsed = JSON.parse(status.stdout) as { session: { task: string } };
 
     expect(parsed.session.task).toBe("Add an external issue tool");
+  });
+
+  it("updates the stored live task when analyze receives an explicit task", async () => {
+    const cwd = await tempRepo();
+
+    await runCli(["init", "--target", demoRoot, "--task", "Old demo task"], { cwd, now });
+    await runCli(["analyze", "--target", demoRoot, "--task", "Dogfood this repository"], { cwd, now });
+    const status = await runCli(["status", "--json"], { cwd });
+    const parsed = JSON.parse(status.stdout) as { session: { task: string } };
+
+    expect(parsed.session.task).toBe("Dogfood this repository");
   });
 });
 

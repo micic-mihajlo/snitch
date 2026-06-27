@@ -14,6 +14,7 @@ type LiveApiState = {
   graph: SnitchGraph;
   warnings: SnitchWarning[];
   events: LiveSnitchEvent[];
+  changed?: ChangedSurfaceView;
   artifacts: {
     findings?: string;
     briefing?: string;
@@ -38,6 +39,14 @@ type LiveApiState = {
     };
     rankedWarnings: RankedWarningView[];
   };
+  diagram?: {
+    generatedAt: string;
+    source: "cerebras";
+    status: "ok" | "disabled" | "fallback";
+    summary: string;
+    model?: string;
+    graph: SnitchGraph;
+  };
   memory?: {
     generatedAt: string;
     backboard: {
@@ -45,6 +54,38 @@ type LiveApiState = {
       rememberedWarnings: number;
     };
   };
+};
+
+export type ChangedSurfaceView = {
+  git: {
+    available: boolean;
+    baseRef?: string;
+    mergeBase?: string;
+    diffMode?: "base" | "worktree";
+    error?: string;
+  };
+  target: string;
+  changedFiles: Array<{
+    path: string;
+    status: string;
+    targetPath?: string;
+    inAnalysisTarget: boolean;
+  }>;
+  changedFindings: Array<{
+    finding: {
+      warningId: string;
+      title: string;
+      severity: string;
+    };
+    matchedFiles: string[];
+  }>;
+  counts: {
+    changedFiles: number;
+    targetChangedFiles: number;
+    activeFindings: number;
+    changedFindings: number;
+  };
+  nextCommands: string[];
 };
 
 type LiveSnitchEvent = {
@@ -80,6 +121,9 @@ type LiveSnitchState = {
     memoryStatus: string;
   };
   rankedWarnings?: RankedWarningView[];
+  changed?: ChangedSurfaceView;
+  diagram?: LiveApiState["diagram"];
+  task?: string;
   graphSourceLabel: string;
   eventCount?: number;
 };
@@ -123,6 +167,18 @@ export function useLiveSnitch(): LiveSnitchState {
             ? `live ${apiState.session.graphSource}`
             : "live artifacts"
         };
+
+        if (apiState.changed) {
+          nextState.changed = apiState.changed;
+        }
+
+        if (apiState.diagram) {
+          nextState.diagram = apiState.diagram;
+        }
+
+        if (apiState.session?.task) {
+          nextState.task = apiState.session.task;
+        }
 
         if (typeof apiState.session?.eventCount === "number") {
           nextState.eventCount = apiState.session.eventCount;

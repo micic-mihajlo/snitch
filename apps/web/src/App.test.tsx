@@ -15,7 +15,7 @@ describe("Snitch dashboard", () => {
 
     expect(screen.getByRole("heading", { name: "Snitch" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Replay next/i })).toBeInTheDocument();
-    expect(screen.getByText("Live System Map")).toBeInTheDocument();
+    expect(screen.getByText("Cerebras Diagram")).toBeInTheDocument();
     expect(screen.getByText("Warning Rail")).toBeInTheDocument();
     expect(screen.getByText("PR Artifact")).toBeInTheDocument();
     expect(screen.getByText("Cerebras")).toBeInTheDocument();
@@ -61,7 +61,7 @@ describe("Snitch dashboard", () => {
 
     await user.click(screen.getByRole("button", { name: /Replay next/i }));
 
-    expect(screen.getByText("Live System Map")).toBeInTheDocument();
+    expect(screen.getByText("Cerebras Diagram")).toBeInTheDocument();
     expect(screen.getByText("Create issue tool")).toBeInTheDocument();
   });
 
@@ -69,10 +69,11 @@ describe("Snitch dashboard", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    expect(screen.getByText(/10\/10 nodes/i)).toBeInTheDocument();
+    expect(screen.getByText("Cerebras Diagram")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Impact" }));
 
+    expect(screen.getByText("Live System Map")).toBeInTheDocument();
     expect(screen.getByText(/6\/10 nodes/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Impact" })).toHaveAttribute(
       "aria-pressed",
@@ -109,11 +110,57 @@ describe("Snitch dashboard", () => {
           },
           graph: snapshot.graph,
           warnings: snapshot.warnings,
+          changed: {
+            target: "apps/demo-app",
+            git: {
+              available: true,
+              baseRef: "origin/main",
+              diffMode: "base"
+            },
+            changedFiles: [
+              {
+                path: "apps/demo-app/src/tools/create-issue.ts",
+                status: "M",
+                targetPath: "src/tools/create-issue.ts",
+                inAnalysisTarget: true
+              },
+              {
+                path: "README.md",
+                status: "M",
+                inAnalysisTarget: false
+              }
+            ],
+            changedFindings: [
+              {
+                finding: {
+                  warningId: "warning:tool_audit_log_missing:create_issue",
+                  title: "No audit trail for external tool calls",
+                  severity: "high"
+                },
+                matchedFiles: ["src/tools/create-issue.ts"]
+              }
+            ],
+            counts: {
+              changedFiles: 2,
+              targetChangedFiles: 1,
+              activeFindings: snapshot.warnings.length,
+              changedFindings: 1
+            },
+            nextCommands: ["pnpm snitch trace --warning warning:tool_audit_log_missing:create_issue --json"]
+          },
           artifacts: {
             mermaid: artifacts["mermaid.mmd"],
             prComment: artifacts["pr-comment.md"],
             handoff: artifacts["handoff.md"],
             timeline: artifacts["timeline.jsonl"]
+          },
+          diagram: {
+            generatedAt: "2026-06-27T12:00:00.000Z",
+            source: "cerebras",
+            status: "ok",
+            summary: "Cerebras selected the issue-tool path for review.",
+            model: "glm-5.1",
+            graph: snapshot.graph
           },
           insights: {
             generatedAt: "2026-06-27T12:00:00.000Z",
@@ -168,12 +215,24 @@ describe("Snitch dashboard", () => {
     await userEvent.click(topRankedWarning);
     expect(screen.getByText("Provider write is exposed without a scoped grant.")).toBeInTheDocument();
     expect(
-      screen.getByText("Gate create_issue behind a session-scoped permission check.")
+      within(screen.getByRole("region", { name: "Selected repair prompt" })).getByText(
+        "Gate create_issue behind a session-scoped permission check."
+      )
     ).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Daily Brief" })).toHaveTextContent(
+      "2 changed / 1 flagged"
+    );
+    expect(screen.getByRole("region", { name: "Daily Brief" })).toHaveTextContent("vs origin/main");
+    expect(screen.getByRole("region", { name: "Changed files" })).toHaveTextContent(
+      "apps/demo-app/src/tools/create-issue.ts"
+    );
+    expect(screen.getByText("Cerebras Diagram")).toBeInTheDocument();
+    expect(screen.getByText("ok · glm-5.1 · 10 nodes")).toBeInTheDocument();
+    expect(screen.getAllByText("Cerebras selected the issue-tool path for review.").length).toBeGreaterThan(0);
     expect(screen.getByText("ok · glm-5.1")).toBeInTheDocument();
     expect(screen.getByText("ok / 2 repo rules")).toBeInTheDocument();
     expect(screen.getByText(/memory: ok \/ 2 memories/)).toBeInTheDocument();
-    expect(screen.getByText(/Cerebras says the issue tool/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/Cerebras says the issue tool/i).length).toBeGreaterThan(0);
 
     fireEvent.click(within(screen.getByTestId("graph-frame")).getByText("Create issue tool"));
     const selectedNode = screen.getByLabelText("Selected graph node");
@@ -237,7 +296,7 @@ describe("Snitch dashboard", () => {
     });
 
     expect(await screen.findByText("live typescript / 2 events")).toBeInTheDocument();
-    expect(screen.getByText("10/10 nodes · +8 / +8")).toBeInTheDocument();
+    expect(screen.getByText("ok · glm-5.1 · 10 nodes")).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /No audit trail for external tool calls/i })
     ).toBeInTheDocument();
@@ -246,7 +305,7 @@ describe("Snitch dashboard", () => {
       MockEventSource.instances[0]?.emit("state", liveApiStateFor(reviewSnapshot, 2));
     });
 
-    expect(screen.getByText("10/10 nodes · +8 / +8")).toBeInTheDocument();
+    expect(screen.getByText("ok · glm-5.1 · 10 nodes")).toBeInTheDocument();
   });
 });
 
@@ -272,6 +331,55 @@ function liveApiStateFor(snapshot: ReplaySnapshot, eventCount: number) {
     },
     graph: snapshot.graph,
     warnings: snapshot.warnings,
+    diagram: {
+      generatedAt: "2026-06-27T12:00:00.000Z",
+      source: "cerebras",
+      status: "ok",
+      summary: "Cerebras selected the current issue-tool path.",
+      model: "glm-5.1",
+      graph: snapshot.graph
+    },
+    changed: {
+      ok: true,
+      cwd: "/tmp/snitch-live",
+      generatedAt: "2026-06-27T12:00:00.000Z",
+      target: "apps/demo-app",
+      git: {
+        available: true,
+        baseRef: "origin/main",
+        diffMode: "base"
+      },
+      changedFiles: [
+        {
+          path: "apps/demo-app/src/tools/create-issue.ts",
+          status: "M",
+          targetPath: "src/tools/create-issue.ts",
+          inAnalysisTarget: true
+        },
+        {
+          path: "README.md",
+          status: "M",
+          inAnalysisTarget: false
+        }
+      ],
+      changedFindings: [
+        {
+          finding: {
+            warningId: "warning:tool_audit_log_missing:create_issue",
+            title: "No audit trail for external tool calls",
+            severity: "high"
+          },
+          matchedFiles: ["src/tools/create-issue.ts"]
+        }
+      ],
+      counts: {
+        changedFiles: 2,
+        targetChangedFiles: 1,
+        activeFindings: snapshot.warnings.length,
+        changedFindings: 1
+      },
+      nextCommands: ["pnpm snitch trace --warning warning:tool_audit_log_missing:create_issue --json"]
+    },
     artifacts: {
       mermaid: artifacts["mermaid.mmd"],
       prComment: artifacts["pr-comment.md"],

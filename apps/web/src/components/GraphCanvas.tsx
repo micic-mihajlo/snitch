@@ -127,11 +127,12 @@ export function GraphCanvas({ graph, selectedNodeId, onSelectNode, cwd }: Props)
     () =>
       graph.edges.map((edge) => {
         const onPath = activeId ? edge.from === activeId || edge.to === activeId : false;
+        const showLabel = graph.edges.length <= 24 || onPath;
         return {
           id: edge.id,
           source: edge.from,
           target: edge.to,
-          label: edge.kind,
+          label: showLabel ? edge.kind : undefined,
           animated: edge.kind === "missing" || edge.kind === "calls",
           className: [`edge-${edge.kind}`, activeId && !onPath ? "edge-dim" : "", onPath ? "edge-on" : ""]
             .filter(Boolean)

@@ -153,6 +153,186 @@ h2 {
   margin-top: 14px;
 }
 
+.daily-brief {
+  display: grid;
+  grid-template-columns: minmax(260px, 1.05fr) minmax(380px, 1.3fr) minmax(320px, 1fr);
+  gap: 14px;
+  align-items: stretch;
+  margin-top: 14px;
+}
+
+.brief-title,
+.brief-metrics,
+.brief-change-list,
+.brief-action,
+.brief-insight {
+  min-width: 0;
+  border: 1px solid var(--line);
+  background: rgba(28, 27, 24, 0.94);
+}
+
+.brief-title,
+.brief-change-list,
+.brief-action,
+.brief-insight {
+  padding: 14px;
+}
+
+.brief-title h2 {
+  font-size: 1.2rem;
+}
+
+.brief-task {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.brief-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.brief-metric {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 14px;
+  border-right: 1px solid var(--line);
+}
+
+.brief-metric:last-child {
+  border-right: 0;
+}
+
+.brief-metric span,
+.brief-metric small,
+.brief-insight-heading {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.brief-metric strong {
+  overflow: hidden;
+  color: var(--paper);
+  font-size: 1.04rem;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.brief-metric-hot strong {
+  color: var(--red);
+}
+
+.brief-metric-clear strong {
+  color: var(--acid);
+}
+
+.brief-action strong {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--paper);
+  line-height: 1.25;
+}
+
+.brief-action p:not(.eyebrow),
+.brief-insight p {
+  color: var(--paper);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.brief-insight {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  color: var(--cyan);
+}
+
+.brief-insight p {
+  color: var(--cyan);
+}
+
+.brief-insight-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.brief-change-list {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
+.brief-change-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.brief-change-heading span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.brief-change-list ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.brief-change-list li {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  color: var(--paper);
+  font-size: 0.78rem;
+}
+
+.brief-change-list code {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 22px;
+  border: 1px solid var(--line);
+  background: rgba(157, 255, 45, 0.08);
+  color: var(--acid);
+  font-family: inherit;
+  font-size: 0.7rem;
+}
+
+.brief-change-list li span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.brief-more,
+.brief-empty {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.brief-change-list .brief-more {
+  display: block;
+}
+
 .lower-grid {
   display: grid;
   grid-template-columns: minmax(260px, 0.75fr) minmax(280px, 0.8fr) minmax(360px, 1.35fr);
@@ -200,7 +380,7 @@ h2 {
 
 .segmented-control {
   display: inline-grid;
-  grid-template-columns: repeat(3, minmax(76px, 1fr));
+  grid-template-columns: repeat(4, minmax(76px, 1fr));
   min-height: 34px;
   overflow: hidden;
   border: 1px solid var(--line);
@@ -228,6 +408,14 @@ h2 {
 .graph-frame {
   width: 100%;
   height: 520px;
+}
+
+.diagram-summary {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  color: var(--cyan);
+  font-size: 0.82rem;
+  line-height: 1.35;
 }
 
 .react-flow__node {
@@ -650,6 +838,7 @@ pre {
 }
 
 @media (max-width: 1100px) {
+  .daily-brief,
   .workspace-grid,
   .lower-grid {
     grid-template-columns: 1fr;
@@ -675,7 +864,7 @@ pre {
 
 @media (max-width: 700px) {
   .snitch-shell {
-    padding: 14px;
+    padding: 12px;
   }
 
   .topbar {
@@ -685,7 +874,7 @@ pre {
   }
 
   h1 {
-    font-size: 3rem;
+    font-size: 2.7rem;
   }
 
   .toolbar {
@@ -701,6 +890,50 @@ pre {
   .tool-button {
     min-width: 0;
     padding: 0 10px;
+  }
+
+  .daily-brief {
+    gap: 10px;
+  }
+
+  .brief-title,
+  .brief-change-list,
+  .brief-action,
+  .brief-insight {
+    padding: 12px;
+  }
+
+  .brief-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .brief-metric {
+    min-height: 58px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .brief-metric:last-child {
+    border-bottom: 0;
+  }
+
+  .brief-insight-heading {
+    display: grid;
+    gap: 4px;
+  }
+
+  .workspace-grid {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .warning-panel {
+    order: 2;
+  }
+
+  .map-panel {
+    order: 1;
+    min-height: auto;
   }
 
   .workspace-grid,
@@ -719,7 +952,7 @@ pre {
   }
 
   .segmented-control {
-    grid-template-columns: repeat(3, minmax(62px, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     width: 100%;
   }
 
@@ -728,7 +961,12 @@ pre {
   }
 
   .graph-frame {
-    height: 390px;
+    height: 300px;
+  }
+
+  .react-flow__edge-text,
+  .react-flow__edge-textbg {
+    display: none;
   }
 
   .warning-item {
@@ -738,5 +976,9 @@ pre {
   .warning-item .rank-badge,
   .warning-item .rank-spacer {
     display: none;
+  }
+
+  pre {
+    max-height: 210px;
   }
 }
