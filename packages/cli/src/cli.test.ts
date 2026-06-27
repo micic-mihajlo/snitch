@@ -242,6 +242,41 @@ describe("snitch cli", () => {
     expect(result.stdout).toContain("Analysis target: .");
   });
 
+  it("prints JSON status for coding-agent automation", async () => {
+    const cwd = await tempRepo();
+
+    await runCli(["init", "--target", demoRoot, "--task", "Wire an issue tool"], { cwd, now });
+    await ingestHookEvent(cwd, {
+      source: "codex",
+      hook: "PostToolUse",
+      body: JSON.stringify({
+        tool_name: "shell",
+        file_path: "src/tools/create-issue.ts",
+        command: "pnpm deploy --token private-status-secret"
+      }),
+      now: new Date("2026-06-27T12:01:00.000Z")
+    });
+
+    const result = await runCli(["status", "--json"], { cwd });
+    const parsed = JSON.parse(result.stdout);
+
+    expect(result.code).toBe(0);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.session.graphSource).toBe("typescript");
+    expect(parsed.session.analysisTarget).toBe(demoRoot);
+    expect(parsed.counts.events).toBe(1);
+    expect(parsed.counts.nodes).toBeGreaterThan(0);
+    expect(parsed.counts.warnings).toBeGreaterThan(0);
+    expect(parsed.warnings[0].repairCommand).toContain("pnpm snitch repair-prompt --warning");
+    expect(parsed.recentEvents[0].safeSummary.commandHash).toBeTruthy();
+    expect(parsed.artifacts.prComment.available).toBe(true);
+    expect(parsed.nextCommands).toContain(
+      `pnpm snitch check --target ${demoRoot} --fail-on medium --json`
+    );
+    expect(JSON.stringify(parsed)).toContain("commandHash");
+    expect(JSON.stringify(parsed)).not.toContain("private-status-secret");
+  });
+
   it("analyzes a TypeScript target into Snitch artifacts", async () => {
     const cwd = await tempRepo();
     const result = await runCli(["analyze", "--target", demoRoot, "--task", "Wire an issue tool"], {
@@ -258,6 +293,14 @@ describe("snitch cli", () => {
     await expect(readFile(join(cwd, ".snitch/pr-comment.md"), "utf8")).resolves.toContain(
       "No audit trail for external tool calls"
     );
+
+    const status = await runCli(["status", "--json"], { cwd });
+    const parsedStatus = JSON.parse(status.stdout);
+
+    expect(status.code).toBe(0);
+    expect(parsedStatus.session.status).toBe("initialized");
+    expect(parsedStatus.session.lastAnalyzedAt).toBeTruthy();
+    expect(parsedStatus.counts.warnings).toBe(4);
   });
 
   it("fails check when warnings meet the severity threshold", async () => {

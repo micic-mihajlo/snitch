@@ -69,6 +69,7 @@ pnpm demo:live --offline-integrations
 pnpm demo:reset
 pnpm demo:repair
 pnpm snitch status
+pnpm snitch status --json
 pnpm snitch finalize
 pnpm snitch install-git-hooks
 pnpm snitch publish-github --repo owner/name --pr 123

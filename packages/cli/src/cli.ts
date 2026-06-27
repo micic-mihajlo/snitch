@@ -137,6 +137,64 @@ type LiveState = {
   memory?: MemoryArtifact;
 };
 
+type SnitchStatusPayload = {
+  ok: true;
+  cwd: string;
+  generatedAt: string;
+  session: {
+    runId: string;
+    status: SnitchSession["status"];
+    task: string;
+    snapshotId: string;
+    graphSource: GraphSource;
+    analysisTarget: string;
+    eventCount: number;
+    lastEventAt: string;
+    lastAnalyzedAt?: string;
+    lastAnalysisError?: string;
+  };
+  counts: {
+    events: number;
+    nodes: number;
+    edges: number;
+    warnings: number;
+    highWarnings: number;
+    blockingWarnings: number;
+  };
+  warnings: Array<{
+    id: string;
+    severity: SnitchWarning["severity"];
+    title: string;
+    evidenceCount: number;
+    repairCommand: string;
+  }>;
+  recentEvents: SnitchEvent[];
+  artifacts: Record<
+    "graph" | "warnings" | "mermaid" | "handoff" | "prComment" | "timeline" | "insights" | "memory",
+    {
+      path: string;
+      available: boolean;
+      bytes: number;
+    }
+  >;
+  integrations: {
+    cerebras?: {
+      status: IntegrationStatus;
+      triageStatus: IntegrationStatus;
+      model?: string;
+    };
+    backboard?: {
+      status: IntegrationStatus;
+      rules: string[];
+    };
+    memory?: {
+      status: IntegrationStatus;
+      rememberedWarnings: number;
+    };
+  };
+  nextCommands: string[];
+};
+
 type InsightArtifact = {
   generatedAt: string;
   narration: string;
@@ -246,6 +304,10 @@ export async function runCli(args: string[], options: RunCliOptions = {}): Promi
     }
 
     if (command === "status") {
+      if (parsed.flags.has("json")) {
+        return ok(`${JSON.stringify(await readSnitchStatusPayload(cwd), null, 2)}\n`);
+      }
+
       return ok(await readSnitchStatus(cwd));
     }
 
@@ -677,6 +739,149 @@ async function readSnitchStatus(cwd: string): Promise<string> {
     `- Hook adapter: ${hookFile}`,
     "- Configure your coding agent to run: node .snitch/hooks/codex-hook.mjs <hook-name>"
   ].join("\n") + "\n";
+}
+
+async function readSnitchStatusPayload(cwd: string): Promise<SnitchStatusPayload> {
+  const session = await readSession(cwd);
+  const events = await readEvents(cwd);
+  const graph = (await readGraphIfExists(cwd)) ?? {
+    id: session.snapshotId,
+    title: "No graph available",
+    nodes: [],
+    edges: []
+  };
+  const warnings = await readWarnings(cwd, graph);
+  const sortedWarnings = warningsAtOrAboveThreshold(warnings, "info");
+  const highWarnings = warnings.filter((warning) => warning.severity === "high");
+  const blockingWarnings = warningsAtOrAboveThreshold(warnings, "medium");
+  const insightsText = await readTextIfExists(cwd, ".snitch/insights.json");
+  const memoryText = await readTextIfExists(cwd, ".snitch/memory.json");
+  const integrations = readStatusIntegrations(insightsText, memoryText);
+  const lastEventAt = events.at(-1)?.receivedAt ?? session.lastEventAt;
+
+  return {
+    ok: true,
+    cwd,
+    generatedAt: new Date().toISOString(),
+    session: {
+      runId: session.runId,
+      status: session.status,
+      task: session.task,
+      snapshotId: session.snapshotId,
+      graphSource: session.graphSource,
+      analysisTarget: session.analysisTarget,
+      eventCount: events.length,
+      lastEventAt,
+      ...(session.lastAnalyzedAt ? { lastAnalyzedAt: session.lastAnalyzedAt } : {}),
+      ...(session.lastAnalysisError ? { lastAnalysisError: session.lastAnalysisError } : {})
+    },
+    counts: {
+      events: events.length,
+      nodes: graph.nodes.length,
+      edges: graph.edges.length,
+      warnings: warnings.length,
+      highWarnings: highWarnings.length,
+      blockingWarnings: blockingWarnings.length
+    },
+    warnings: sortedWarnings.map((warning) => ({
+      id: warning.id,
+      severity: warning.severity,
+      title: warning.title,
+      evidenceCount: warning.evidence.length,
+      repairCommand: `pnpm snitch repair-prompt --warning ${warning.id}`
+    })),
+    recentEvents: events.slice(-20),
+    artifacts: await readStatusArtifacts(cwd),
+    integrations,
+    nextCommands: createStatusNextCommands(session, sortedWarnings)
+  };
+}
+
+async function readStatusArtifacts(cwd: string): Promise<SnitchStatusPayload["artifacts"]> {
+  const artifactPaths = {
+    graph: ".snitch/graph.json",
+    warnings: ".snitch/warnings.json",
+    mermaid: ".snitch/mermaid.mmd",
+    handoff: ".snitch/handoff.md",
+    prComment: ".snitch/pr-comment.md",
+    timeline: ".snitch/timeline.jsonl",
+    insights: ".snitch/insights.json",
+    memory: ".snitch/memory.json"
+  } as const;
+
+  const entries = await Promise.all(
+    Object.entries(artifactPaths).map(async ([key, path]) => {
+      const contents = await readTextIfExists(cwd, path);
+
+      return [
+        key,
+        {
+          path,
+          available: contents.length > 0,
+          bytes: Buffer.byteLength(contents)
+        }
+      ] as const;
+    })
+  );
+
+  return Object.fromEntries(entries) as SnitchStatusPayload["artifacts"];
+}
+
+function readStatusIntegrations(
+  insightsText: string,
+  memoryText: string
+): SnitchStatusPayload["integrations"] {
+  const integrations: SnitchStatusPayload["integrations"] = {};
+
+  if (insightsText.trim()) {
+    const insights = JSON.parse(insightsText) as Partial<InsightArtifact>;
+
+    if (insights.cerebras) {
+      integrations.cerebras = {
+        status: insights.cerebras.status,
+        triageStatus: insights.cerebras.triageStatus,
+        ...(insights.cerebras.model ? { model: insights.cerebras.model } : {})
+      };
+    }
+
+    if (insights.backboard) {
+      integrations.backboard = {
+        status: insights.backboard.status,
+        rules: insights.backboard.rules ?? []
+      };
+    }
+  }
+
+  if (memoryText.trim()) {
+    const memory = JSON.parse(memoryText) as Partial<MemoryArtifact>;
+
+    if (memory.backboard) {
+      integrations.memory = {
+        status: memory.backboard.status,
+        rememberedWarnings: memory.backboard.rememberedWarnings ?? 0
+      };
+    }
+  }
+
+  return integrations;
+}
+
+function createStatusNextCommands(
+  session: SnitchSession,
+  warnings: SnitchWarning[]
+): string[] {
+  const commands = [
+    `pnpm snitch check --target ${shellArgForPrompt(session.analysisTarget)} --fail-on medium --json`
+  ];
+  const firstWarning = warnings[0];
+
+  if (firstWarning) {
+    commands.push(`pnpm snitch repair-prompt --warning ${firstWarning.id}`);
+  }
+
+  commands.push("pnpm snitch finalize");
+
+  return commands;
 }
 
 async function ensureInitialized(cwd: string, now: Date): Promise<void> {
@@ -2261,12 +2466,36 @@ async function readConfig(cwd: string): Promise<SnitchConfig> {
 
 async function readSession(cwd: string): Promise<SnitchSession> {
   const contents = await readFile(resolve(cwd, ".snitch/session.json"), "utf8");
-  const parsed = JSON.parse(contents) as SnitchSession;
+  const parsed = JSON.parse(contents) as Partial<SnitchSession> & {
+    createdAt?: string;
+    reviewSnapshotId?: string;
+  };
+  const lastEventAt =
+    parsed.lastEventAt ?? parsed.lastAnalyzedAt ?? parsed.createdAt ?? new Date(0).toISOString();
+  const startedAt = parsed.startedAt ?? parsed.createdAt ?? lastEventAt;
 
   return {
-    ...parsed,
+    runId: parsed.runId ?? "snitch-unknown",
+    task: parsed.task ?? defaultTask,
+    status: parsed.status ?? "initialized",
+    source: "snitch-background",
+    startedAt,
+    lastEventAt,
+    eventCount: parsed.eventCount ?? 0,
+    snapshotId: parsed.snapshotId ?? parsed.reviewSnapshotId ?? "unknown",
     graphSource: parsed.graphSource ?? "replay",
-    analysisTarget: parsed.analysisTarget ?? "."
+    analysisTarget: parsed.analysisTarget ?? ".",
+    ...(parsed.lastAnalyzedAt ? { lastAnalyzedAt: parsed.lastAnalyzedAt } : {}),
+    ...(parsed.lastAnalysisError ? { lastAnalysisError: parsed.lastAnalysisError } : {}),
+    eventsPath: eventsFile,
+    artifacts: parsed.artifacts ?? [
+      "graph.json",
+      "warnings.json",
+      "timeline.jsonl",
+      "mermaid.mmd",
+      "handoff.md",
+      "pr-comment.md"
+    ]
   };
 }
 
@@ -2387,7 +2616,7 @@ function helpText(): string {
     "  snitch watch [--cwd <repo>] [--target <ts-repo>] [--port <port>] [--interval <ms>] [--scan-interval <ms>] [--no-files]",
     "  snitch insights [--cwd <repo>] [--offline]",
     "  snitch repair-prompt [--cwd <repo>] [--warning <id>] [--all]",
-    "  snitch status [--cwd <repo>]",
+    "  snitch status [--cwd <repo>] [--json]",
     "  snitch finalize [--cwd <repo>]",
     "  snitch install-git-hooks [--cwd <repo>] [--force]",
     "  snitch publish-github [--cwd <repo>] [--repo owner/name] [--pr <number>] [--token <token>]"
