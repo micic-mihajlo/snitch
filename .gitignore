@@ -10,4 +10,4 @@ coverage/
 .codex/hooks.json
 .cursor/rules/snitch.mdc
 .claude/settings.local.json
-.opencode/snitch-plugin.ts
+.opencode/plugins/snitch.ts

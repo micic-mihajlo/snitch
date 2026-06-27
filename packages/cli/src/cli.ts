@@ -748,7 +748,7 @@ async function initializeSnitch(
     includeFiles: true,
     artifactsDir: ".snitch",
     hookAdapter: hookFile,
-    hookCommand: "node .snitch/hooks/codex-hook.mjs <hook-name>",
+    hookCommand: createRepoRootHookCommand("<hook-name>"),
     agents,
     generatedConfigs,
     analysis: {
@@ -788,7 +788,7 @@ async function initializeSnitch(
   return [
     "Snitch background companion initialized.",
     `- Hook adapter: ${hookFile}`,
-    `- Agent command: node ${hookFile} <hook-name>`,
+    `- Agent command: ${createRepoRootHookCommand("<hook-name>")}`,
     `- Agent configs: ${generatedConfigs.join(", ")}`,
     `- Analysis target: ${storedTarget}`,
     "- Local state: .snitch/config.json, .snitch/session.json, .snitch/events.jsonl",
@@ -971,7 +971,7 @@ async function readSnitchStatus(cwd: string): Promise<string> {
     `- Graph source: ${session.graphSource ?? "replay"}`,
     `- Analysis target: ${session.analysisTarget ?? "."}`,
     `- Hook adapter: ${hookFile}`,
-    "- Configure your coding agent to run: node .snitch/hooks/codex-hook.mjs <hook-name>"
+    `- Configure your coding agent to run: ${createRepoRootHookCommand("<hook-name>")}`
   ].join("\n") + "\n";
 }
 
@@ -1329,7 +1329,7 @@ async function readAgentConfigsDoctorCheck(
     return doctorCheck({
       id: "agent-configs",
       label: "Agent configs",
-      status: "warn",
+      status: "fail",
       detail: `Missing generated config(s): ${missing.join(", ")}.`,
       nextCommand: initCommand
     });
@@ -1497,9 +1497,7 @@ async function readGitHookDoctorChecks(cwd: string): Promise<DoctorCheck[]> {
         unmanaged.length > 0 ? `unmanaged: ${unmanaged.join(", ")}` : ""
       ].filter(Boolean).join("; "),
       path: storeTargetPath(cwd, hooksDir),
-      nextCommand: unmanaged.length > 0
-        ? "pnpm snitch install-git-hooks --force"
-        : "pnpm snitch install-git-hooks"
+      nextCommand: "pnpm snitch install-git-hooks"
     })
   ];
 }
@@ -3481,9 +3479,7 @@ function warningsAtOrAboveThreshold(
 }
 
 function shellArgForPrompt(value: string): string {
-  return value.includes(" ") || value.includes("'") || value.includes("\"")
-    ? shellQuote(value)
-    : value;
+  return shellQuote(value);
 }
 
 async function rememberWarningsOnFinalize(cwd: string, now: Date): Promise<MemoryArtifact> {
@@ -4101,7 +4097,7 @@ async function persistAnalysisTarget(
       includeFiles: true,
       artifactsDir: ".snitch",
       hookAdapter: hookFile,
-      hookCommand: "node .snitch/hooks/codex-hook.mjs <hook-name>",
+      hookCommand: createRepoRootHookCommand("<hook-name>"),
       agents: ["codex"],
       generatedConfigs: [],
       analysis: {
@@ -4221,6 +4217,7 @@ const input = readFileSync(0, "utf8");
 const hook = process.env.SNITCH_HOOK_NAME || process.env.CODEX_HOOK_NAME || process.argv[2] || "agent-event";
 const source = process.env.SNITCH_SOURCE || "codex";
 const ingestUrl = process.env.SNITCH_INGEST_URL || "http://127.0.0.1:4767/api/events";
+const repoRoot = findRepoRoot();
 const liveResult = await postToLiveServer(ingestUrl, source, hook, input);
 
 if (liveResult.ok) {
@@ -4232,7 +4229,7 @@ if (liveResult.ok) {
 
 const result = spawnSync(
   "pnpm",
-  ["--dir", ${JSON.stringify(snitchRoot)}, "snitch", "event", "--cwd", process.cwd(), "--source", source, "--hook", hook],
+  ["--dir", ${JSON.stringify(snitchRoot)}, "snitch", "event", "--cwd", repoRoot, "--source", source, "--hook", hook],
   {
     input,
     encoding: "utf8",
@@ -4252,6 +4249,10 @@ async function postToLiveServer(url, sourceName, hookName, body) {
 
   try {
     const target = new URL(url);
+    if (!isLoopbackTarget(target)) {
+      return { ok: false, agentFeedback: "" };
+    }
+
     target.searchParams.set("source", sourceName);
     target.searchParams.set("hook", hookName);
     const response = await fetch(target, {
@@ -4274,6 +4275,27 @@ async function postToLiveServer(url, sourceName, hookName, body) {
     clearTimeout(timeout);
   }
 }
+
+function isLoopbackTarget(target) {
+  const hostname = target.hostname.toLowerCase();
+
+  return target.protocol === "http:" && (
+    hostname === "localhost" ||
+    hostname === "127.0.0.1" ||
+    hostname === "::1" ||
+    hostname === "[::1]"
+  );
+}
+
+function findRepoRoot() {
+  const result = spawnSync("git", ["rev-parse", "--show-toplevel"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"]
+  });
+  const stdout = typeof result.stdout === "string" ? result.stdout.trim() : "";
+
+  return result.status === 0 && stdout ? stdout : process.cwd();
+}
 `;
 }
 
@@ -4293,7 +4315,7 @@ async function writeAgentConfigs(cwd: string, agents: AgentTarget[]): Promise<vo
       }
 
       if (agent === "opencode") {
-        await writeText(cwd, ".opencode/snitch-plugin.ts", createOpenCodePlugin());
+        await writeText(cwd, ".opencode/plugins/snitch.ts", createOpenCodePlugin());
       }
     })
   );
@@ -4338,7 +4360,7 @@ function codexHook(hook: string, statusMessage: string): unknown {
     hooks: [
       {
         type: "command",
-        command: `node .snitch/hooks/codex-hook.mjs ${hook}`,
+        command: createRepoRootHookCommand(hook),
         timeout: 30,
         statusMessage
       }
@@ -4361,19 +4383,36 @@ function claudeHook(hook: string): unknown {
     hooks: [
       {
         type: "command",
-        command: `SNITCH_SOURCE=claude node .snitch/hooks/codex-hook.mjs ${hook}`,
+        command: createRepoRootHookCommand(hook, "claude"),
         timeout: 30
       }
     ]
   };
 }
 
+function createRepoRootHookCommand(hook: string, source?: string): string {
+  const sourcePrefix = source ? `SNITCH_SOURCE=${source} ` : "";
+
+  return `repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"; ${sourcePrefix}node "$repo_root/.snitch/hooks/codex-hook.mjs" ${hook}`;
+}
+
 function createOpenCodePlugin(): string {
-  return `export default function snitchPlugin() {
+  return `export const snitchPlugin = async () => {
+  const decoder = new TextDecoder();
+  const findRepoRoot = () => {
+    const proc = Bun.spawnSync(["git", "rev-parse", "--show-toplevel"], {
+      stderr: "ignore"
+    });
+    const stdout = decoder.decode(proc.stdout).trim();
+
+    return proc.exitCode === 0 && stdout ? stdout : process.cwd();
+  };
+
   const run = async (event, payload) => {
+    const repoRoot = findRepoRoot();
     const proc = Bun.spawn([
       "node",
-      ".snitch/hooks/codex-hook.mjs",
+      repoRoot + "/.snitch/hooks/codex-hook.mjs",
       event
     ], {
       stdin: "pipe",
@@ -4388,13 +4427,14 @@ function createOpenCodePlugin(): string {
   };
 
   return {
-    event: async ({ event, properties }) => {
-      if (event === "tool.execute.after" || event === "file.edited" || event === "session.idle") {
-        await run(event, properties);
+    event: async ({ event }) => {
+      const eventType = typeof event?.type === "string" ? event.type : "";
+      if (eventType === "tool.execute.after" || eventType === "file.edited" || eventType === "session.idle") {
+        await run(eventType, event);
       }
     }
   };
-}
+};
 `;
 }
 
@@ -4461,7 +4501,7 @@ function generatedConfigPaths(agents: AgentTarget[]): string[] {
   }
 
   if (agents.includes("opencode")) {
-    paths.push(".opencode/snitch-plugin.ts");
+    paths.push(".opencode/plugins/snitch.ts");
   }
 
   return paths;

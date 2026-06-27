@@ -113,16 +113,16 @@ After `pnpm snitch init --agent all`, Snitch writes:
 - `.codex/hooks.json`
 - `.cursor/rules/snitch.mdc`
 - `.claude/settings.local.json`
-- `.opencode/snitch-plugin.ts`
+- `.opencode/plugins/snitch.ts`
 - `.snitch/hooks/codex-hook.mjs`
 
 The generated hook command is:
 
 ```bash
-node .snitch/hooks/codex-hook.mjs <hook-name>
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"; node "$repo_root/.snitch/hooks/codex-hook.mjs" <hook-name>
 ```
 
-When `snitch watch` is running, the generated adapter first tries to POST into the live server at `SNITCH_INGEST_URL` or `http://127.0.0.1:4767/api/events`. If the server is unavailable, it falls back to `pnpm snitch event`. Set `SNITCH_DISABLE_HTTP=1` to force CLI-only capture.
+When `snitch watch` is running, the generated adapter first tries to POST into the loopback live server at `SNITCH_INGEST_URL` or `http://127.0.0.1:4767/api/events`. Non-loopback ingest URLs are ignored so raw hook payloads stay on the machine. If the server is unavailable, it falls back to `pnpm snitch event`. Set `SNITCH_DISABLE_HTTP=1` to force CLI-only capture.
 
 The generated adapter calls back into this Snitch checkout and records:
 

@@ -48,6 +48,12 @@ describe("snitch cli", () => {
       "postToLiveServer"
     );
     await expect(readFile(join(cwd, ".snitch/hooks/codex-hook.mjs"), "utf8")).resolves.toContain(
+      "isLoopbackTarget"
+    );
+    await expect(readFile(join(cwd, ".snitch/hooks/codex-hook.mjs"), "utf8")).resolves.toContain(
+      "findRepoRoot"
+    );
+    await expect(readFile(join(cwd, ".snitch/hooks/codex-hook.mjs"), "utf8")).resolves.toContain(
       "agentFeedback"
     );
 
@@ -69,10 +75,13 @@ describe("snitch cli", () => {
     expect(result.stdout).toContain(".codex/hooks.json");
     expect(result.stdout).toContain(".cursor/rules/snitch.mdc");
     expect(result.stdout).toContain(".claude/settings.local.json");
-    expect(result.stdout).toContain(".opencode/snitch-plugin.ts");
+    expect(result.stdout).toContain(".opencode/plugins/snitch.ts");
     expect(result.stdout).toContain(`Analysis target: ${demoRoot}`);
     await expect(readFile(join(cwd, ".codex/hooks.json"), "utf8")).resolves.toContain(
       "PostToolUse"
+    );
+    await expect(readFile(join(cwd, ".codex/hooks.json"), "utf8")).resolves.toContain(
+      "git rev-parse --show-toplevel"
     );
     await expect(readFile(join(cwd, ".cursor/rules/snitch.mdc"), "utf8")).resolves.toContain(
       "Snitch local verification"
@@ -89,8 +98,11 @@ describe("snitch cli", () => {
     await expect(readFile(join(cwd, ".claude/settings.local.json"), "utf8")).resolves.toContain(
       "SNITCH_SOURCE=claude"
     );
-    await expect(readFile(join(cwd, ".opencode/snitch-plugin.ts"), "utf8")).resolves.toContain(
+    await expect(readFile(join(cwd, ".opencode/plugins/snitch.ts"), "utf8")).resolves.toContain(
       "tool.execute.after"
+    );
+    await expect(readFile(join(cwd, ".opencode/plugins/snitch.ts"), "utf8")).resolves.toContain(
+      "event.type"
     );
   });
 
@@ -263,7 +275,8 @@ describe("snitch cli", () => {
 
     expect(result.code).toBe(0);
     expect(result.stdout).toContain("Snitch background companion");
-    expect(result.stdout).toContain("node .snitch/hooks/codex-hook.mjs");
+    expect(result.stdout).toContain(".snitch/hooks/codex-hook.mjs");
+    expect(result.stdout).toContain("git rev-parse --show-toplevel");
     expect(result.stdout).toContain("Analysis target: .");
   });
 
@@ -302,7 +315,7 @@ describe("snitch cli", () => {
       parsed.nextCommands.some((command: string) => command.startsWith("pnpm snitch trace --warning "))
     ).toBe(true);
     expect(parsed.nextCommands).toContain(
-      `pnpm snitch check --target ${demoRoot} --fail-on medium --json`
+      `pnpm snitch check --target '${demoRoot}' --fail-on medium --json`
     );
     expect(JSON.stringify(parsed)).toContain("commandHash");
     expect(JSON.stringify(parsed)).not.toContain("private-status-secret");
@@ -330,7 +343,7 @@ describe("snitch cli", () => {
       ".codex/hooks.json",
       ".cursor/rules/snitch.mdc",
       ".claude/settings.local.json",
-      ".opencode/snitch-plugin.ts"
+      ".opencode/plugins/snitch.ts"
     ]);
     expect(initialPayload.checks).toContainEqual(
       expect.objectContaining({
@@ -367,6 +380,88 @@ describe("snitch cli", () => {
     expect(afterHooks.stdout).toContain("Snitch doctor");
     expect(afterHooks.stdout).toContain("Ready: yes");
     expect(afterHooks.stdout).toContain("[pass] Local Git hooks");
+  });
+
+  it("fails doctor readiness when configured agent wiring is missing", async () => {
+    const cwd = await tempRepo();
+
+    await runCli(["init", "--agent", "codex", "--target", demoRoot, "--task", "Wire an issue tool"], {
+      cwd,
+      now
+    });
+    await rm(join(cwd, ".codex/hooks.json"), { force: true });
+
+    const result = await runCli(["doctor", "--json"], { cwd });
+    const parsed = JSON.parse(result.stdout);
+    const mcp = await handleMcpJsonRpcMessage(cwd, {
+      jsonrpc: "2.0",
+      id: 77,
+      method: "tools/call",
+      params: {
+        name: "snitch_doctor",
+        arguments: {}
+      }
+    });
+    const mcpResult = mcp as {
+      result: {
+        structuredContent: {
+          ready: boolean;
+          checks: Array<{ id: string; status: string }>;
+        };
+      };
+    };
+
+    expect(result.code).toBe(0);
+    expect(parsed.ready).toBe(false);
+    expect(parsed.checks).toContainEqual(
+      expect.objectContaining({
+        id: "agent-configs",
+        status: "fail"
+      })
+    );
+    expect(mcpResult.result.structuredContent.ready).toBe(false);
+    expect(mcpResult.result.structuredContent.checks).toContainEqual(
+      expect.objectContaining({
+        id: "agent-configs",
+        status: "fail"
+      })
+    );
+  });
+
+  it("quotes shell-sensitive targets in agent-facing next commands", async () => {
+    const cwd = await tempRepo();
+    const target = "target;touch_should_not_run";
+
+    await mkdir(join(cwd, target), { recursive: true });
+    await runCli(["init", "--target", target, "--task", "Wire an issue tool"], { cwd, now });
+
+    const result = await runCli(["doctor", "--json"], { cwd });
+    const parsed = JSON.parse(result.stdout);
+    const joinedCommands = parsed.nextCommands.join("\n");
+
+    expect(joinedCommands).toContain("--target 'target;touch_should_not_run'");
+    expect(joinedCommands).not.toContain("--target target;touch_should_not_run");
+  });
+
+  it("does not tell agents to force-overwrite unmanaged Git hooks", async () => {
+    const cwd = await tempRepo();
+
+    await mkdir(join(cwd, ".git/hooks"), { recursive: true });
+    await writeFile(join(cwd, ".git/hooks/pre-push"), "# existing team hook\n", "utf8");
+    await runCli(["init", "--agent", "codex", "--target", demoRoot, "--task", "Wire an issue tool"], {
+      cwd,
+      now
+    });
+
+    const result = await runCli(["doctor", "--json"], { cwd });
+    const parsed = JSON.parse(result.stdout);
+    const hookCheck = parsed.checks.find((check: { id: string }) => check.id === "git-hooks");
+
+    expect(hookCheck).toMatchObject({
+      status: "warn",
+      nextCommand: "pnpm snitch install-git-hooks"
+    });
+    expect(JSON.stringify(parsed)).not.toContain("--force");
   });
 
   it("prints a scoped warning impact for coding-agent follow-up", async () => {
