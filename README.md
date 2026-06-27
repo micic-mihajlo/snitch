@@ -19,6 +19,7 @@ This repo now includes a working first slice:
 - graph scope controls for all, changed, and selected-warning impact views
 - sponsor artifact lane: `pnpm snitch sponsors` writes Cerebras narration and Backboard repo-rule status
 - scripted repair pass: `pnpm demo:repair` adds the missing companion work and regenerates warning-free artifacts
+- one-command live demo runner: `pnpm demo:live`
 - prepared demo assistant app under `apps/demo-app`
 - deterministic graph IR, hashing, diffing, and last-good-graph behavior
 - replayed issue-tool demo graph with missing companion warnings
@@ -32,14 +33,10 @@ See [docs/strategy-2026-06-27.md](docs/strategy-2026-06-27.md) for the researche
 
 ```bash
 pnpm install
-pnpm snitch init --agent all --target apps/demo-app --task "Add an external issue-creation tool to this coding assistant"
-printf '{"tool_name":"apply_patch","file_path":"src/tools/create-issue.ts"}' | pnpm snitch event --source codex --hook PostToolUse
-pnpm snitch sponsors
-pnpm snitch watch
-pnpm dev:live
+pnpm demo:live
 ```
 
-`pnpm snitch init` creates the local background state, hook adapters, and analysis target. File-changing `snitch event` calls refresh the TypeScript graph and write `.snitch` graph, warnings, Mermaid, handoff, and PR artifacts. `pnpm snitch sponsors` writes `.snitch/sponsors.json`; when credentials are configured, that path uses Backboard for repo rules and Cerebras for fast narration, otherwise it writes deterministic fallback status. `pnpm snitch watch` serves those artifacts at `http://127.0.0.1:4767`, and `pnpm dev:live` points the dashboard at that local server. Plain `pnpm dev` stays in clean replay fallback mode. The first screen is the Snitch inspection surface: live graph, warning rail, timeline, sponsor lane, and PR artifact preview.
+`pnpm demo:live` prepares code-derived artifacts, writes sponsor status, starts `snitch watch` at `http://127.0.0.1:4767`, and starts the dashboard pointed at that local server. Plain `pnpm dev` stays in clean replay fallback mode. The first screen is the Snitch inspection surface: live graph, warning rail, timeline, sponsor lane, and PR artifact preview.
 
 Useful commands:
 
@@ -51,6 +48,7 @@ pnpm snitch sponsors --offline
 pnpm snitch sponsors
 pnpm snitch watch --port 4767
 pnpm dev:live
+pnpm demo:live --offline-sponsors
 pnpm demo:repair
 pnpm snitch status
 pnpm snitch finalize
