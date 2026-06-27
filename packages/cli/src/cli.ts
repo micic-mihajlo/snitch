@@ -305,6 +305,29 @@ type SnitchIntentPayload = IntentCoverage & {
   nextCommands: string[];
 };
 
+type SnitchRepairVerificationPayload = {
+  ok: boolean;
+  cwd: string;
+  generatedAt: string;
+  target: string;
+  task: string;
+  warningId: string;
+  status: "repaired" | "still_active";
+  counts: {
+    nodes: number;
+    edges: number;
+    warnings: number;
+  };
+  warning?: {
+    id: string;
+    severity: SnitchWarning["severity"];
+    title: string;
+    evidence: string[];
+    repairCommand: string;
+  };
+  nextCommands: string[];
+};
+
 type DoctorStatus = "pass" | "warn" | "fail";
 
 type DoctorCheck = {
@@ -611,6 +634,10 @@ export async function runCli(args: string[], options: RunCliOptions = {}): Promi
       return ok(await readRepairPrompt(cwd, parsed.flags));
     }
 
+    if (command === "verify-repair") {
+      return verifyRepair(cwd, parsed.flags, now);
+    }
+
     if (command === "finalize") {
       const message = await finalizeSnitch(cwd, now);
       return ok(message);
@@ -737,6 +764,131 @@ async function checkTypeScriptRepo(
     ].join("\n") + "\n",
     stderr: ""
   };
+}
+
+async function verifyRepair(
+  cwd: string,
+  flags: ParsedArgs["flags"],
+  now: Date
+): Promise<CliResult> {
+  const payload = await readRepairVerificationPayload(cwd, flags, now);
+
+  if (flags.has("json")) {
+    return {
+      code: payload.ok ? 0 : 1,
+      stdout: `${JSON.stringify(payload, null, 2)}\n`,
+      stderr: ""
+    };
+  }
+
+  return {
+    code: payload.ok ? 0 : 1,
+    stdout: formatRepairVerification(payload),
+    stderr: ""
+  };
+}
+
+async function readRepairVerificationPayload(
+  cwd: string,
+  flags: ParsedArgs["flags"],
+  now: Date
+): Promise<SnitchRepairVerificationPayload> {
+  const warningFlag = flags.get("warning");
+
+  if (!warningFlag || warningFlag === true) {
+    throw new Error("verify-repair requires --warning <id>.");
+  }
+
+  await ensureDirs(cwd);
+
+  const session = await readSessionIfExists(cwd);
+  const targetInput = flagString(flags.get("target")) ?? session?.analysisTarget ?? ".";
+  const target = resolveStoredTarget(cwd, targetInput);
+  const task = flagString(flags.get("task")) ?? session?.task ?? defaultTask;
+  const analysis = await writeTypeScriptArtifacts(cwd, {
+    target,
+    task,
+    now,
+    runId: `snitch-verify-repair-${basename(target) || "repo"}`
+  });
+  const activeWarning = analysis.snapshot.warnings.find((warning) => warning.id === warningFlag);
+
+  await persistAnalysisTarget(cwd, target, now, analysis.snapshot.id);
+
+  const payload: SnitchRepairVerificationPayload = {
+    ok: !activeWarning,
+    cwd,
+    generatedAt: now.toISOString(),
+    target: analysis.target,
+    task,
+    warningId: warningFlag,
+    status: activeWarning ? "still_active" : "repaired",
+    counts: {
+      nodes: analysis.snapshot.graph.nodes.length,
+      edges: analysis.snapshot.graph.edges.length,
+      warnings: analysis.snapshot.warnings.length
+    },
+    nextCommands: createRepairVerificationNextCommands(analysis.target, task, activeWarning)
+  };
+
+  if (activeWarning) {
+    payload.warning = {
+      id: activeWarning.id,
+      severity: activeWarning.severity,
+      title: activeWarning.title,
+      evidence: activeWarning.evidence,
+      repairCommand: `pnpm snitch repair-prompt --warning ${activeWarning.id}`
+    };
+  }
+
+  return payload;
+}
+
+function createRepairVerificationNextCommands(
+  target: string,
+  task: string,
+  activeWarning?: SnitchWarning
+): string[] {
+  if (activeWarning) {
+    return [
+      `pnpm snitch trace --warning ${activeWarning.id} --json`,
+      `pnpm snitch repair-prompt --warning ${activeWarning.id}`,
+      `pnpm snitch verify-repair --warning ${activeWarning.id} --target ${shellArgForPrompt(target)} --task ${shellArgForPrompt(task)} --json`
+    ];
+  }
+
+  return [
+    `pnpm snitch verify-intent --task ${shellArgForPrompt(task)} --json`,
+    "pnpm snitch changed --json",
+    `pnpm snitch check --target ${shellArgForPrompt(target)} --fail-on medium --json`
+  ];
+}
+
+function formatRepairVerification(payload: SnitchRepairVerificationPayload): string {
+  const heading = payload.ok ? "Snitch repair verified." : "Snitch repair verification failed.";
+  const warningLines = payload.warning
+    ? [
+        "",
+        "Still active:",
+        `- [${payload.warning.severity}] ${payload.warning.title} (${payload.warning.id})`,
+        ...payload.warning.evidence.map((item) => `  Evidence: ${item}`)
+      ]
+    : [];
+
+  return [
+    heading,
+    `- Warning: ${payload.warningId}`,
+    `- Target: ${payload.target}`,
+    `- Warnings: ${payload.counts.warnings}`,
+    ...warningLines,
+    "",
+    "Next commands:",
+    ...payload.nextCommands.map((command) => `- ${command}`)
+  ].join("\n") + "\n";
+}
+
+function flagString(value: string | true | undefined): string | undefined {
+  return value && value !== true ? value : undefined;
 }
 
 async function initializeSnitch(
@@ -2671,7 +2823,7 @@ function createMcpInitializeResult(params: unknown): Record<string, unknown> {
       version: "0.1.0"
     },
     instructions:
-      "Use Snitch tools to inspect setup readiness, task intent coverage, the local .snitch graph, changed files, active warnings, safe agent events, warning traces, next action, and repair prompts for AI coding-agent changes."
+      "Use Snitch tools to inspect setup readiness, task intent coverage, repair verification, the local .snitch graph, changed files, active warnings, safe agent events, warning traces, next action, and repair prompts for AI coding-agent changes."
   };
 }
 
@@ -2831,6 +2983,35 @@ function createMcpTools(): Array<Record<string, unknown>> {
       }
     },
     {
+      name: "snitch_verify_repair",
+      title: "Snitch Repair Verification",
+      description:
+        "Rerun Snitch analysis and verify that a specific warning is no longer active after a repair.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          cwd: {
+            type: "string",
+            description: "Repository root. Defaults to the MCP server working directory."
+          },
+          warning: {
+            type: "string",
+            description: "Warning id to verify as repaired."
+          },
+          target: {
+            type: "string",
+            description: "TypeScript target to analyze. Defaults to the stored Snitch analysis target."
+          },
+          task: {
+            type: "string",
+            description: "Task intent used in generated artifacts. Defaults to the stored Snitch task."
+          }
+        },
+        required: ["warning"],
+        additionalProperties: false
+      }
+    },
+    {
       name: "snitch_impact",
       title: "Snitch Warning Impact",
       description:
@@ -2918,6 +3099,10 @@ async function callMcpTool(cwd: string, params: unknown): Promise<McpToolResult>
       return jsonMcpToolResult(await readSnitchIntentPayload(toolCwd, mcpFlags(args)));
     }
 
+    if (name === "snitch_verify_repair") {
+      return callMcpVerifyRepairTool(toolCwd, args);
+    }
+
     if (name === "snitch_impact") {
       const payload = await readSnitchImpactPayload(toolCwd, mcpFlags(args));
       return jsonMcpToolResult(payload);
@@ -2973,6 +3158,19 @@ async function callMcpCheckTool(cwd: string, args: Record<string, unknown>): Pro
     content: [{ type: "text", text: `${JSON.stringify(structuredContent, null, 2)}\n` }],
     structuredContent,
     isError: result.code !== 0
+  };
+}
+
+async function callMcpVerifyRepairTool(
+  cwd: string,
+  args: Record<string, unknown>
+): Promise<McpToolResult> {
+  const payload = await readRepairVerificationPayload(cwd, mcpFlags(args), new Date());
+
+  return {
+    content: [{ type: "text", text: `${JSON.stringify(payload, null, 2)}\n` }],
+    structuredContent: payload,
+    isError: !payload.ok
   };
 }
 
@@ -3581,8 +3779,8 @@ function formatRepairPrompt(context: RepairPromptContext): string {
     instruction,
     "",
     "Acceptance checks:",
-    `- Re-run \`pnpm snitch analyze --target ${shellArgForPrompt(context.target)} --task ${shellArgForPrompt(context.task)}\`.`,
-    `- Confirm warning \`${context.warning.id}\` is gone from \`.snitch/warnings.json\`.`,
+    `- Run \`pnpm snitch verify-repair --warning ${context.warning.id} --target ${shellArgForPrompt(context.target)} --task ${shellArgForPrompt(context.task)}\`.`,
+    "- Confirm it prints `Snitch repair verified.` and exits 0.",
     "- Run the relevant tests for the changed tool, route, or permission path."
   ].filter((line): line is string => line !== undefined).join("\n");
 }
@@ -4485,6 +4683,7 @@ Use Snitch when a task changes routes, tools, schemas, auth, permissions, extern
 - Run \`pnpm snitch trace --warning <id>\` when you need to connect a warning to safe hook events and graph timeline evidence.
 - Run \`pnpm snitch changed\` before handoff to focus warnings on the local Git changed surface.
 - Run \`pnpm snitch repair-prompt\` when warnings are active, then implement the returned agent prompt.
+- Run \`pnpm snitch verify-repair --warning <id> --target . --task "<current task>"\` after repairing a warning.
 - Run \`pnpm snitch finalize\` before preparing a pull request or handoff.
 - Treat \`.snitch/graph.json\`, \`.snitch/warnings.json\`, \`.snitch/findings.json\`, \`.snitch/next-action.md\`, \`.snitch/mermaid.mmd\`, \`.snitch/pr-comment.md\`, and \`.snitch/handoff.md\` as generated evidence.
 - Do not give the coding agent GitHub write access for Snitch publishing; publish artifacts through a separate workflow.
@@ -4918,6 +5117,7 @@ function helpText(): string {
     "  snitch status [--cwd <repo>] [--json]",
     "  snitch doctor [--cwd <repo>] [--json]",
     "  snitch verify-intent [--cwd <repo>] [--task <task>] [--json]",
+    "  snitch verify-repair [--cwd <repo>] --warning <id> [--target <ts-repo>] [--task <task>] [--json]",
     "  snitch changed [--cwd <repo>] [--target <ts-repo>] [--json]",
     "  snitch trace [--cwd <repo>] [--warning <id>] [--json]",
     "  snitch impact [--cwd <repo>] [--warning <id>] [--json]",

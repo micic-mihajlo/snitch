@@ -815,6 +815,17 @@ describe("snitch cli", () => {
         }
       }
     });
+    const repairVerification = await handleMcpJsonRpcMessage(cwd, {
+      jsonrpc: "2.0",
+      id: 13,
+      method: "tools/call",
+      params: {
+        name: "snitch_verify_repair",
+        arguments: {
+          warning: "warning:tool_audit_log_missing:create_issue"
+        }
+      }
+    });
     const impact = await handleMcpJsonRpcMessage(cwd, {
       jsonrpc: "2.0",
       id: 9,
@@ -933,6 +944,16 @@ describe("snitch cli", () => {
         };
       };
     };
+    const repairVerificationResult = repairVerification as {
+      result: {
+        isError?: boolean;
+        structuredContent: {
+          ok: boolean;
+          status: string;
+          warningId: string;
+        };
+      };
+    };
     const impactResult = impact as {
       result: {
         isError?: boolean;
@@ -960,6 +981,7 @@ describe("snitch cli", () => {
       "snitch_trace",
       "snitch_changed",
       "snitch_verify_intent",
+      "snitch_verify_repair",
       "snitch_impact",
       "snitch_repair_prompt"
     ]);
@@ -1018,6 +1040,12 @@ describe("snitch cli", () => {
         status: "missing"
       })
     );
+    expect(repairVerificationResult.result.isError).toBe(true);
+    expect(repairVerificationResult.result.structuredContent).toMatchObject({
+      ok: false,
+      status: "still_active",
+      warningId: "warning:tool_audit_log_missing:create_issue"
+    });
     expect(impactResult.result.isError).toBe(false);
     expect(impactResult.result.structuredContent.warning.id).toBe(
       "warning:secret_redaction_missing:create_issue"
@@ -1129,6 +1157,94 @@ describe("snitch cli", () => {
     expect(result.code).toBe(0);
     expect(result.stdout).toContain("Snitch check passed");
     expect(result.stdout).toContain("Blocking warnings: 0");
+  });
+
+  it("verifies whether a specific repair cleared its warning", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "snitch-verify-repair-"));
+    const repairedRoot = join(tempRoot, "demo-app");
+    const cwd = join(tempRoot, "workspace");
+    tempDirs.push(tempRoot);
+    await cp(demoRoot, repairedRoot, { recursive: true });
+    await mkdir(cwd, { recursive: true });
+
+    const active = await runCli(
+      [
+        "verify-repair",
+        "--cwd",
+        cwd,
+        "--target",
+        repairedRoot,
+        "--task",
+        "Wire an issue tool",
+        "--warning",
+        "warning:tool_audit_log_missing:create_issue",
+        "--json"
+      ],
+      { now }
+    );
+    const activeParsed = JSON.parse(active.stdout);
+
+    expect(active.code).toBe(1);
+    expect(activeParsed).toMatchObject({
+      ok: false,
+      status: "still_active",
+      warningId: "warning:tool_audit_log_missing:create_issue"
+    });
+    expect(activeParsed.nextCommands).toContain(
+      "pnpm snitch repair-prompt --warning warning:tool_audit_log_missing:create_issue"
+    );
+
+    await applyDemoRepair({
+      target: repairedRoot,
+      artifactsDir: join(cwd, ".snitch"),
+      now
+    });
+
+    const repaired = await runCli(
+      [
+        "verify-repair",
+        "--cwd",
+        cwd,
+        "--target",
+        repairedRoot,
+        "--task",
+        "Wire an issue tool",
+        "--warning",
+        "warning:tool_audit_log_missing:create_issue",
+        "--json"
+      ],
+      { now: new Date("2026-06-27T12:07:00.000Z") }
+    );
+    const repairedParsed = JSON.parse(repaired.stdout);
+    const human = await runCli(
+      [
+        "verify-repair",
+        "--cwd",
+        cwd,
+        "--target",
+        repairedRoot,
+        "--task",
+        "Wire an issue tool",
+        "--warning",
+        "warning:tool_audit_log_missing:create_issue"
+      ],
+      { now: new Date("2026-06-27T12:08:00.000Z") }
+    );
+
+    expect(repaired.code).toBe(0);
+    expect(repairedParsed).toMatchObject({
+      ok: true,
+      status: "repaired",
+      warningId: "warning:tool_audit_log_missing:create_issue",
+      counts: {
+        warnings: 0
+      }
+    });
+    expect(repairedParsed.nextCommands).toContain(
+      "pnpm snitch verify-intent --task 'Wire an issue tool' --json"
+    );
+    expect(human.code).toBe(0);
+    expect(human.stdout).toContain("Snitch repair verified.");
   });
 
   it("reads live dashboard state from Snitch artifacts", async () => {
@@ -1268,7 +1384,8 @@ describe("snitch cli", () => {
     expect(result.stdout).toContain("Warning ID: warning:tool_audit_log_missing:create_issue");
     expect(result.stdout).toContain("Instruction for the coding agent:");
     expect(result.stdout).toContain("Add an audit log write around create_issue calls");
-    expect(result.stdout).toContain("Confirm warning `warning:tool_audit_log_missing:create_issue` is gone");
+    expect(result.stdout).toContain("pnpm snitch verify-repair --warning warning:tool_audit_log_missing:create_issue");
+    expect(result.stdout).toContain("Snitch repair verified.");
   });
 
   it("uses ranked warning insights when choosing the next repair prompt", async () => {
