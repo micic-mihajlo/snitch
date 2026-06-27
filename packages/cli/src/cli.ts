@@ -132,6 +132,7 @@ type LiveState = {
   events: SnitchEvent[];
   artifacts: {
     findings: string;
+    nextAction: string;
     mermaid: string;
     prComment: string;
     handoff: string;
@@ -177,6 +178,7 @@ type SnitchStatusPayload = {
     | "graph"
     | "warnings"
     | "findings"
+    | "nextAction"
     | "mermaid"
     | "handoff"
     | "prComment"
@@ -204,6 +206,35 @@ type SnitchStatusPayload = {
       rememberedWarnings: number;
     };
   };
+  nextCommands: string[];
+};
+
+type SafeEventReference = {
+  id: string;
+  source: SnitchEvent["source"];
+  phase: SnitchEvent["phase"];
+  hook: string;
+  receivedAt: string;
+  safeSummary: SnitchEvent["safeSummary"];
+  evidence?: SnitchEvent["evidence"];
+};
+
+type SnitchNextActionPayload = {
+  ok: true;
+  cwd: string;
+  generatedAt: string;
+  status: "clear" | "action_required";
+  task: string;
+  counts: {
+    warnings: number;
+    findings: number;
+    anchoredFindings: number;
+    relatedEvents: number;
+  };
+  topFinding?: SnitchFinding;
+  latestEvent?: SafeEventReference;
+  relatedEvents: SafeEventReference[];
+  agentInstruction: string;
   nextCommands: string[];
 };
 
@@ -280,6 +311,8 @@ type WatchRefreshResult = {
 type HookIngestResult = {
   ok: true;
   message: string;
+  agentFeedback: string;
+  nextAction: SnitchNextActionPayload;
 };
 
 type GitHubComment = {
@@ -395,6 +428,10 @@ export async function runCli(args: string[], options: RunCliOptions = {}): Promi
       return ok(await readSnitchFindings(cwd, parsed.flags));
     }
 
+    if (command === "next-action") {
+      return ok(await readSnitchNextAction(cwd, parsed.flags));
+    }
+
     if (command === "mcp") {
       await startMcpStdioServer(cwd);
       return ok("");
@@ -504,7 +541,7 @@ async function analyzeTypeScriptRepo(
     `- Nodes: ${analysis.snapshot.graph.nodes.length}`,
     `- Edges: ${analysis.snapshot.graph.edges.length}`,
     `- Warnings: ${analysis.snapshot.warnings.length}`,
-    "- Updated: .snitch/graph.json, .snitch/findings.json, .snitch/mermaid.mmd, .snitch/pr-comment.md"
+    "- Updated: .snitch/graph.json, .snitch/findings.json, .snitch/next-action.md, .snitch/mermaid.mmd, .snitch/pr-comment.md"
   ].join("\n") + "\n";
 }
 
@@ -577,7 +614,7 @@ async function checkTypeScriptRepo(
       `- Edges: ${analysis.snapshot.graph.edges.length}`,
       `- Warnings: ${analysis.snapshot.warnings.length}`,
       `- Blocking warnings: ${blockingWarnings.length}`,
-      "- Updated: .snitch/graph.json, .snitch/warnings.json, .snitch/findings.json, .snitch/pr-comment.md",
+      "- Updated: .snitch/graph.json, .snitch/warnings.json, .snitch/findings.json, .snitch/next-action.md, .snitch/pr-comment.md",
       ...warningLines
     ].join("\n") + "\n",
     stderr: ""
@@ -651,7 +688,7 @@ async function initializeSnitch(
     `- Agent configs: ${generatedConfigs.join(", ")}`,
     `- Analysis target: ${storedTarget}`,
     "- Local state: .snitch/config.json, .snitch/session.json, .snitch/events.jsonl",
-    "- Artifacts: .snitch/graph.json, .snitch/findings.json, .snitch/mermaid.mmd, .snitch/pr-comment.md"
+    "- Artifacts: .snitch/graph.json, .snitch/findings.json, .snitch/next-action.md, .snitch/mermaid.mmd, .snitch/pr-comment.md"
   ].join("\n") + "\n";
 }
 
@@ -697,12 +734,16 @@ async function recordSnitchEvent(
 
   await writeJsonl(cwd, eventsFile, nextEvents);
   await writeJson(cwd, ".snitch/session.json", updatedSession);
+  const nextAction = await readSnitchNextActionPayload(cwd);
+  const agentFeedback = formatSnitchNextAction(nextAction);
+  await writeText(cwd, ".snitch/next-action.md", agentFeedback);
 
   return [
     `Snitch captured ${input.source}:${input.hook}.`,
     `- Events: ${nextEvents.length}`,
     `- Graph: ${graphUpdate.message}`,
-    "- Updated: .snitch/graph.json, .snitch/findings.json, .snitch/mermaid.mmd, .snitch/pr-comment.md"
+    `- Next action: ${formatNextActionSummary(nextAction)}`,
+    "- Updated: .snitch/graph.json, .snitch/findings.json, .snitch/next-action.md, .snitch/mermaid.mmd, .snitch/pr-comment.md"
   ].join("\n") + "\n";
 }
 
@@ -891,6 +932,7 @@ async function readStatusArtifacts(cwd: string): Promise<SnitchStatusPayload["ar
     graph: ".snitch/graph.json",
     warnings: ".snitch/warnings.json",
     findings: ".snitch/findings.json",
+    nextAction: ".snitch/next-action.md",
     mermaid: ".snitch/mermaid.mmd",
     handoff: ".snitch/handoff.md",
     prComment: ".snitch/pr-comment.md",
@@ -961,6 +1003,7 @@ function createStatusNextCommands(
   warnings: SnitchWarning[]
 ): string[] {
   const commands = [
+    "pnpm snitch next-action --json",
     `pnpm snitch check --target ${shellArgForPrompt(session.analysisTarget)} --fail-on medium --json`
   ];
   const firstWarning = warnings[0];
@@ -1182,6 +1225,188 @@ function formatFindingLocation(finding: SnitchFinding): string {
     : finding.anchor.file;
 }
 
+async function readSnitchNextAction(cwd: string, flags: ParsedArgs["flags"]): Promise<string> {
+  const payload = await readSnitchNextActionPayload(cwd);
+
+  if (flags.has("json")) {
+    return `${JSON.stringify(payload, null, 2)}\n`;
+  }
+
+  return formatSnitchNextAction(payload);
+}
+
+async function readSnitchNextActionPayload(cwd: string): Promise<SnitchNextActionPayload> {
+  const session = await readSession(cwd);
+  const graph = await readGraphIfExists(cwd);
+
+  if (!graph) {
+    throw new Error("No Snitch graph found. Run `pnpm snitch analyze` or `pnpm snitch init` first.");
+  }
+
+  const warnings = await readWarnings(cwd, graph);
+  const findings = buildSnitchFindings(graph, warnings);
+  const insightsText = await readTextIfExists(cwd, ".snitch/insights.json");
+  const insights = insightsText ? (JSON.parse(insightsText) as Partial<InsightArtifact>) : {};
+  const rankings = Array.isArray(insights.rankedWarnings) ? insights.rankedWarnings : [];
+  const orderedWarnings = orderWarningsForRepair(warnings, rankings);
+  const warningRank = new Map(orderedWarnings.map((warning, index) => [warning.id, index]));
+  const orderedFindings = [...findings].sort((left, right) => {
+    const leftRank = warningRank.get(left.warningId) ?? Number.MAX_SAFE_INTEGER;
+    const rightRank = warningRank.get(right.warningId) ?? Number.MAX_SAFE_INTEGER;
+
+    return leftRank - rightRank || left.id.localeCompare(right.id);
+  });
+  const topFinding = orderedFindings[0];
+  const events = await readEvents(cwd);
+  const relatedEvents = topFinding
+    ? events.filter((event) => eventTouchesFinding(event, topFinding)).slice(-5).map(toSafeEventReference)
+    : [];
+  const latestEvent = events.at(-1);
+  const status = topFinding ? "action_required" : "clear";
+  const target = session.analysisTarget ?? ".";
+  const nextCommands = topFinding
+    ? [
+        topFinding.repairCommand,
+        `pnpm snitch impact --warning ${topFinding.warningId} --json`,
+        `pnpm snitch check --target ${shellArgForPrompt(target)} --fail-on medium --json`
+      ]
+    : [
+        `pnpm snitch check --target ${shellArgForPrompt(target)} --fail-on medium --json`,
+        "pnpm snitch finalize"
+      ];
+  const payload: SnitchNextActionPayload = {
+    ok: true,
+    cwd,
+    generatedAt: new Date().toISOString(),
+    status,
+    task: session.task,
+    counts: {
+      warnings: warnings.length,
+      findings: findings.length,
+      anchoredFindings: findings.filter((finding) => Boolean(finding.anchor)).length,
+      relatedEvents: relatedEvents.length
+    },
+    relatedEvents,
+    agentInstruction: topFinding
+      ? `Address ${topFinding.warningId} before continuing broad implementation. Run ${topFinding.repairCommand}, add the missing companion work, then rerun Snitch check.`
+      : "No active Snitch findings. Continue implementation and run Snitch check before handoff.",
+    nextCommands
+  };
+
+  if (topFinding) {
+    payload.topFinding = topFinding;
+  }
+
+  if (latestEvent) {
+    payload.latestEvent = toSafeEventReference(latestEvent);
+  }
+
+  return payload;
+}
+
+function formatSnitchNextAction(payload: SnitchNextActionPayload): string {
+  const finding = payload.topFinding;
+  const findingLines = finding
+    ? [
+        "Top finding:",
+        `- [${finding.severity}] ${finding.title}`,
+        `- Warning ID: ${finding.warningId}`,
+        `- Anchor: ${formatFindingLocation(finding)}`,
+        `- Repair: ${finding.repairCommand}`,
+        "",
+        "Evidence:",
+        ...finding.evidence.map((item) => `- ${item}`)
+      ]
+    : ["Top finding:", "- none"];
+  const relatedEventLines = payload.relatedEvents.length > 0
+    ? payload.relatedEvents.map((event) => `- ${event.source}:${event.hook} ${formatSafeEventSummary(event)}`)
+    : ["- none"];
+
+  return [
+    "# Snitch Next Action",
+    "",
+    `Status: ${payload.status}`,
+    `Task: ${payload.task}`,
+    `Active warnings: ${payload.counts.warnings}`,
+    `Anchored findings: ${payload.counts.anchoredFindings}`,
+    "",
+    ...findingLines,
+    "",
+    "Likely related agent events:",
+    ...relatedEventLines,
+    "",
+    "Instruction for the coding agent:",
+    payload.agentInstruction,
+    "",
+    "Next commands:",
+    ...payload.nextCommands.map((command) => `- ${command}`)
+  ].join("\n") + "\n";
+}
+
+function formatNextActionSummary(payload: SnitchNextActionPayload): string {
+  if (!payload.topFinding) {
+    return "clear";
+  }
+
+  return `${payload.topFinding.warningId} at ${formatFindingLocation(payload.topFinding)}`;
+}
+
+function eventTouchesFinding(event: SnitchEvent, finding: SnitchFinding): boolean {
+  const anchorFile = finding.anchor?.file;
+
+  if (!anchorFile) {
+    return false;
+  }
+
+  return eventFileReferences(event).some((file) => file === anchorFile || file.endsWith(`/${anchorFile}`));
+}
+
+function eventFileReferences(event: SnitchEvent): string[] {
+  const files = new Set<string>();
+
+  for (const evidence of event.evidence ?? []) {
+    files.add(evidence.file);
+  }
+
+  for (const key of ["file_path", "file", "path"]) {
+    const value = event.safeSummary[key];
+
+    if (typeof value === "string") {
+      files.add(value);
+    }
+  }
+
+  return [...files];
+}
+
+function toSafeEventReference(event: SnitchEvent): SafeEventReference {
+  const reference: SafeEventReference = {
+    id: event.id,
+    source: event.source,
+    phase: event.phase,
+    hook: event.hook,
+    receivedAt: event.receivedAt,
+    safeSummary: event.safeSummary
+  };
+
+  if (event.evidence) {
+    reference.evidence = event.evidence;
+  }
+
+  return reference;
+}
+
+function formatSafeEventSummary(event: SafeEventReference): string {
+  const tool = event.safeSummary.tool_name ?? event.safeSummary.tool;
+  const file = event.safeSummary.file_path ?? event.safeSummary.file ?? event.safeSummary.path;
+  const parts = [
+    typeof tool === "string" ? `tool=${tool}` : undefined,
+    typeof file === "string" ? `file=${file}` : undefined
+  ].filter((part): part is string => Boolean(part));
+
+  return parts.length > 0 ? `(${parts.join(", ")})` : "";
+}
+
 async function startMcpStdioServer(cwd: string): Promise<void> {
   process.stdin.setEncoding("utf8");
 
@@ -1304,7 +1529,7 @@ function createMcpInitializeResult(params: unknown): Record<string, unknown> {
       version: "0.1.0"
     },
     instructions:
-      "Use Snitch tools to inspect the local .snitch graph, active warnings, safe agent events, and repair prompts for AI coding-agent changes."
+      "Use Snitch tools to inspect the local .snitch graph, active warnings, safe agent events, next action, and repair prompts for AI coding-agent changes."
   };
 }
 
@@ -1360,6 +1585,22 @@ function createMcpTools(): Array<Record<string, unknown>> {
       title: "Snitch Findings",
       description:
         "Return active Snitch warnings as anchored review findings with file, line, evidence, and repair commands.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          cwd: {
+            type: "string",
+            description: "Repository root. Defaults to the MCP server working directory."
+          }
+        },
+        additionalProperties: false
+      }
+    },
+    {
+      name: "snitch_next_action",
+      title: "Snitch Next Action",
+      description:
+        "Return the highest-priority grounded follow-up for the coding agent, including finding anchor, related safe events, and commands.",
       inputSchema: {
         type: "object",
         properties: {
@@ -1437,6 +1678,10 @@ async function callMcpTool(cwd: string, params: unknown): Promise<McpToolResult>
     if (name === "snitch_findings") {
       const findings = await readSnitchFindingsPayload(toolCwd);
       return jsonMcpToolResult({ ok: true, cwd: toolCwd, findings });
+    }
+
+    if (name === "snitch_next_action") {
+      return jsonMcpToolResult(await readSnitchNextActionPayload(toolCwd));
     }
 
     if (name === "snitch_impact") {
@@ -1687,10 +1932,13 @@ export async function ingestHookEvent(
     stdin: input.body,
     now: input.now
   });
+  const nextAction = await readSnitchNextActionPayload(cwd);
 
   return {
     ok: true,
-    message
+    message,
+    agentFeedback: formatSnitchNextAction(nextAction),
+    nextAction
   };
 }
 
@@ -1812,6 +2060,7 @@ export async function readLiveState(cwd: string): Promise<LiveState> {
     events: events.slice(-50),
     artifacts: {
       findings: await readTextIfExists(cwd, ".snitch/findings.json"),
+      nextAction: await readTextIfExists(cwd, ".snitch/next-action.md"),
       mermaid: await readTextIfExists(cwd, ".snitch/mermaid.mmd"),
       prComment: await readTextIfExists(cwd, ".snitch/pr-comment.md"),
       handoff: await readTextIfExists(cwd, ".snitch/handoff.md"),
@@ -2845,6 +3094,7 @@ function createSession(input: {
       "graph.json",
       "warnings.json",
       "findings.json",
+      "next-action.md",
       "timeline.jsonl",
       "mermaid.mmd",
       "handoff.md",
@@ -2864,8 +3114,12 @@ const input = readFileSync(0, "utf8");
 const hook = process.env.SNITCH_HOOK_NAME || process.env.CODEX_HOOK_NAME || process.argv[2] || "agent-event";
 const source = process.env.SNITCH_SOURCE || "codex";
 const ingestUrl = process.env.SNITCH_INGEST_URL || "http://127.0.0.1:4767/api/events";
+const liveResult = await postToLiveServer(ingestUrl, source, hook, input);
 
-if (await postToLiveServer(ingestUrl, source, hook, input)) {
+if (liveResult.ok) {
+  if (liveResult.agentFeedback && process.env.SNITCH_PRINT_FEEDBACK !== "0") {
+    process.stderr.write("\\n" + liveResult.agentFeedback + "\\n");
+  }
   process.exit(0);
 }
 
@@ -2883,7 +3137,7 @@ process.exit(result.status ?? 1);
 
 async function postToLiveServer(url, sourceName, hookName, body) {
   if (process.env.SNITCH_DISABLE_HTTP === "1") {
-    return false;
+    return { ok: false, agentFeedback: "" };
   }
 
   const controller = new AbortController();
@@ -2901,10 +3155,14 @@ async function postToLiveServer(url, sourceName, hookName, body) {
       body,
       signal: controller.signal
     });
+    const payload = await response.json().catch(() => ({}));
 
-    return response.ok;
+    return {
+      ok: response.ok,
+      agentFeedback: typeof payload.agentFeedback === "string" ? payload.agentFeedback : ""
+    };
   } catch {
-    return false;
+    return { ok: false, agentFeedback: "" };
   } finally {
     clearTimeout(timeout);
   }
@@ -2947,9 +3205,10 @@ Use Snitch when a task changes routes, tools, schemas, auth, permissions, extern
 - Run \`pnpm snitch analyze --target . --task "<current task>"\` after meaningful implementation changes.
 - Run \`pnpm snitch check --target . --task "<current task>"\` before handing off risky changes.
 - Run \`pnpm snitch insights --offline\` when provider credentials are unavailable.
+- Run \`pnpm snitch next-action\` after Snitch captures a hook event to get the current grounded agent follow-up.
 - Run \`pnpm snitch repair-prompt\` when warnings are active, then implement the returned agent prompt.
 - Run \`pnpm snitch finalize\` before preparing a pull request or handoff.
-- Treat \`.snitch/graph.json\`, \`.snitch/warnings.json\`, \`.snitch/findings.json\`, \`.snitch/mermaid.mmd\`, \`.snitch/pr-comment.md\`, and \`.snitch/handoff.md\` as generated evidence.
+- Treat \`.snitch/graph.json\`, \`.snitch/warnings.json\`, \`.snitch/findings.json\`, \`.snitch/next-action.md\`, \`.snitch/mermaid.mmd\`, \`.snitch/pr-comment.md\`, and \`.snitch/handoff.md\` as generated evidence.
 - Do not give the coding agent GitHub write access for Snitch publishing; publish artifacts through a separate workflow.
 `;
 }
@@ -3186,6 +3445,7 @@ async function readSession(cwd: string): Promise<SnitchSession> {
       "graph.json",
       "warnings.json",
       "findings.json",
+      "next-action.md",
       "timeline.jsonl",
       "mermaid.mmd",
       "handoff.md",
@@ -3322,6 +3582,7 @@ function helpText(): string {
     "  snitch status [--cwd <repo>] [--json]",
     "  snitch impact [--cwd <repo>] [--warning <id>] [--json]",
     "  snitch findings [--cwd <repo>] [--json]",
+    "  snitch next-action [--cwd <repo>] [--json]",
     "  snitch mcp [--cwd <repo>]",
     "  snitch finalize [--cwd <repo>]",
     "  snitch install-git-hooks [--cwd <repo>] [--force]",

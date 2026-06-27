@@ -146,6 +146,7 @@ export type SnitchArtifacts = {
   "graph.json": string;
   "warnings.json": string;
   "findings.json": string;
+  "next-action.md": string;
   "timeline.jsonl": string;
   "mermaid.mmd": string;
   "handoff.md": string;

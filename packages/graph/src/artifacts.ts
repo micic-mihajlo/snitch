@@ -29,6 +29,7 @@ export function buildSnitchArtifacts(input: SnitchArtifactInput): SnitchArtifact
     "graph.json": JSON.stringify(input.reviewSnapshot.graph, null, 2),
     "warnings.json": JSON.stringify(input.reviewSnapshot.warnings, null, 2),
     "findings.json": JSON.stringify(findings, null, 2),
+    "next-action.md": buildNextAction(input.reviewSnapshot, input.task, findings),
     "timeline.jsonl": buildTimelineJsonl(input.replay),
     "mermaid.mmd": mermaid,
     "handoff.md": buildHandoff(input.reviewSnapshot, input.task, findings),
@@ -111,6 +112,56 @@ function buildPrComment(
     "### Review Findings",
     "",
     ...formatFindingBullets(findings)
+  ].join("\n");
+}
+
+function buildNextAction(
+  snapshot: ReplaySnapshot,
+  task: string,
+  findings: ReturnType<typeof buildSnitchFindings>
+): string {
+  const topFinding = findings[0];
+
+  if (!topFinding) {
+    return [
+      "# Snitch Next Action",
+      "",
+      `Task: ${task}`,
+      "",
+      "Status: clear",
+      "",
+      "No active Snitch findings. Continue with normal implementation and run `pnpm snitch check` before handoff."
+    ].join("\n");
+  }
+
+  const location = topFinding.anchor
+    ? `${topFinding.anchor.file}${topFinding.anchor.line ? `:${topFinding.anchor.line}` : ""}`
+    : "unanchored";
+
+  return [
+    "# Snitch Next Action",
+    "",
+    `Task: ${task}`,
+    "",
+    "Status: action_required",
+    `Active warnings: ${snapshot.warnings.length}`,
+    "",
+    "Top finding:",
+    `- [${topFinding.severity}] ${topFinding.title}`,
+    `- Warning ID: ${topFinding.warningId}`,
+    `- Anchor: ${location}`,
+    `- Repair: ${topFinding.repairCommand}`,
+    "",
+    "Evidence:",
+    ...topFinding.evidence.map((item) => `- ${item}`),
+    "",
+    "Instruction for the coding agent:",
+    "Address this finding before continuing broad implementation. Add the missing companion work, then rerun Snitch to verify the warning is gone.",
+    "",
+    "Verification:",
+    "- Run the repair command above for the full focused prompt.",
+    "- Run `pnpm snitch check --fail-on medium --json` after the fix.",
+    "- Confirm `.snitch/warnings.json` no longer contains the warning ID."
   ].join("\n");
 }
 

@@ -11,7 +11,7 @@ This repo now includes a working first slice:
 - background CLI: `pnpm snitch init`, `event`, `status`, and `finalize`
 - generated hook adapter at `.snitch/hooks/codex-hook.mjs`
 - generated Codex, Cursor, Claude Code, and OpenCode adapter configs with `--agent all`
-- MCP stdio server: `pnpm --silent snitch mcp` exposes status, check, findings, impact, and repair-prompt tools to MCP-capable agents
+- MCP stdio server: `pnpm --silent snitch mcp` exposes status, check, findings, next-action, impact, and repair-prompt tools to MCP-capable agents
 - local Git hook installer: `pnpm snitch install-git-hooks`
 - privacy-preserving local event log at `.snitch/events.jsonl`
 - normalized event model with payload hashing and safe summaries
@@ -26,6 +26,7 @@ This repo now includes a working first slice:
 - database graph extraction for common Prisma, Drizzle, and Supabase read/write calls
 - graph scope controls for all, changed, and selected-warning impact views
 - insights artifact: `pnpm snitch insights` writes Cerebras narration, warning ranking, repair prompts, and Backboard repo-rule status
+- agent intervention packet: `pnpm snitch next-action` tells the coding agent the current grounded follow-up after hook capture
 - paste-ready repair prompt: `pnpm snitch repair-prompt` prints the next agent fix from active warnings
 - anchored review findings: `pnpm snitch findings` maps warnings to file/line evidence
 - agent/reviewer impact lens: `pnpm snitch impact` prints the affected warning neighborhood as Markdown or JSON
@@ -64,6 +65,8 @@ pnpm snitch check --target apps/demo-app --task "Add an external issue-creation 
 pnpm snitch check --target apps/demo-app --fail-on medium --json
 pnpm snitch insights --offline
 pnpm snitch insights
+pnpm snitch next-action
+pnpm snitch next-action --json
 pnpm snitch repair-prompt
 pnpm snitch repair-prompt --warning warning:permission_scope_missing:create_issue
 pnpm snitch findings
@@ -123,6 +126,7 @@ It does not store the raw hook payload. File-changing events refresh the configu
 - `.snitch/graph.json`
 - `.snitch/warnings.json`
 - `.snitch/findings.json`
+- `.snitch/next-action.md`
 - `.snitch/timeline.jsonl`
 - `.snitch/mermaid.mmd`
 - `.snitch/handoff.md`
@@ -131,13 +135,15 @@ It does not store the raw hook payload. File-changing events refresh the configu
 
 `snitch finalize` also writes `.snitch/memory.json`. With Backboard credentials, it remembers active warning decisions as safe metadata and evidence hashes; without credentials, it records disabled status so the live dashboard can show the memory lane honestly.
 
+`snitch next-action` is the hook-to-agent intervention path. It reads the active findings and safe hook event summaries, then returns the highest-priority grounded follow-up with file/line evidence, likely related agent events, and next commands. Use `--json` for MCP clients, hooks, and agent automation.
+
 `snitch repair-prompt` is the coding-agent handoff path. It reads the active warning set and prints a paste-ready prompt for the next fix. If `.snitch/insights.json` contains Cerebras warning ranks, Snitch uses that ordering; otherwise it falls back to deterministic severity ordering. Use `--warning <id>` to pin a warning or `--all` to print every active repair prompt.
 
 `snitch findings` is the reviewer evidence path. It turns active graph warnings into anchored findings with file, line, warning id, evidence, and repair command. Use `--json` for agents, CI, or future PR publishers.
 
 `snitch impact` is the local impact lens for agents and reviewers. It scopes the graph around a warning, prints the affected files, nodes, edges, and repair command, and supports `--json` so coding agents can consume it directly. Without `--warning`, it uses the highest-severity active warning.
 
-`snitch mcp` starts a newline-delimited JSON-RPC MCP stdio server for MCP-capable coding environments. It exposes `snitch_status`, `snitch_check`, `snitch_findings`, `snitch_impact`, and `snitch_repair_prompt`, each backed by the same local `.snitch` artifacts as the CLI. The server writes only MCP messages to stdout; when launching through this repo's package script, use `pnpm --silent snitch mcp` so the package runner does not print its command first.
+`snitch mcp` starts a newline-delimited JSON-RPC MCP stdio server for MCP-capable coding environments. It exposes `snitch_status`, `snitch_check`, `snitch_findings`, `snitch_next_action`, `snitch_impact`, and `snitch_repair_prompt`, each backed by the same local `.snitch` artifacts as the CLI. The server writes only MCP messages to stdout; when launching through this repo's package script, use `pnpm --silent snitch mcp` so the package runner does not print its command first.
 
 `snitch check` is the enforcement path. It runs the TypeScript extractor, updates `.snitch` artifacts, and exits with code `1` when warnings meet or exceed `--fail-on` (`high` by default). Use `--json` for CI consumers and follow failures with `pnpm snitch repair-prompt --warning <id>`.
 
@@ -152,7 +158,7 @@ It does not store the raw hook payload. File-changing events refresh the configu
 - `GET /api/events` for Server-Sent Events
 - `POST /api/events?source=<agent>&hook=<hook>` for local hook ingestion
 
-The dashboard listens to `/api/events` for low-latency state updates and falls back to polling `/api/state` when EventSource is unavailable. By default, `snitch watch` also polls the configured TypeScript target and regenerates `.snitch/graph.json`, `.snitch/warnings.json`, `.snitch/mermaid.mmd`, and `.snitch/pr-comment.md` when code files change. Use `--target <repo>` to override the stored analysis target, `--scan-interval <ms>` to tune refresh speed, or `--no-files` to serve artifacts without file watching.
+The dashboard listens to `/api/events` for low-latency state updates and falls back to polling `/api/state` when EventSource is unavailable. By default, `snitch watch` also polls the configured TypeScript target and regenerates `.snitch/graph.json`, `.snitch/warnings.json`, `.snitch/findings.json`, `.snitch/next-action.md`, `.snitch/mermaid.mmd`, and `.snitch/pr-comment.md` when code files change. Use `--target <repo>` to override the stored analysis target, `--scan-interval <ms>` to tune refresh speed, or `--no-files` to serve artifacts without file watching.
 
 `/api/state` includes the latest graph, warnings, publishable artifacts, integration status, and the last 50 normalized hook events. The event trace is safe for UI rendering because it contains hashes, byte counts, safe summary keys, and file evidence rather than raw payloads.
 

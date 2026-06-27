@@ -20,6 +20,7 @@ describe("buildSnitchArtifacts", () => {
       "graph.json",
       "handoff.md",
       "mermaid.mmd",
+      "next-action.md",
       "pr-comment.md",
       "session.json",
       "timeline.jsonl",
@@ -38,6 +39,9 @@ describe("buildSnitchArtifacts", () => {
     expect(artifacts["handoff.md"]).toContain("## Active warnings");
     expect(artifacts["handoff.md"]).toContain("- Tools: Create issue tool");
     expect(artifacts["handoff.md"]).toContain("- Environment: ISSUE_PROVIDER_API_KEY");
+    expect(artifacts["next-action.md"]).toContain("Snitch Next Action");
+    expect(artifacts["next-action.md"]).toContain("Status: action_required");
+    expect(artifacts["next-action.md"]).toContain("pnpm snitch repair-prompt --warning");
     expect(artifacts["pr-comment.md"]).toContain("## Snitch Review");
     expect(artifacts["pr-comment.md"]).toContain("### System Impact");
     expect(artifacts["pr-comment.md"]).toContain("- Active warnings: 4 (2 high, 2 medium)");
