@@ -106,12 +106,29 @@ describe("Snitch dashboard", () => {
             narration: "Cerebras says the issue tool added an external API path.",
             cerebras: {
               status: "ok",
+              triageStatus: "ok",
               model: "glm-5.1"
             },
             backboard: {
               status: "ok",
               rules: ["External tools require audit logs.", "Secrets must be redacted."]
-            }
+            },
+            rankedWarnings: [
+              {
+                warningId: "warning:permission_scope_missing:create_issue",
+                rank: 1,
+                priority: "critical",
+                reason: "Provider write is exposed without a scoped grant.",
+                repairPrompt: "Gate create_issue behind a session-scoped permission check."
+              },
+              {
+                warningId: "warning:tool_audit_log_missing:create_issue",
+                rank: 2,
+                priority: "high",
+                reason: "External provider calls need an audit trail.",
+                repairPrompt: "Write a redacted audit record for every create_issue call."
+              }
+            ]
           }
         })
       }))
@@ -121,10 +138,16 @@ describe("Snitch dashboard", () => {
 
     expect(await screen.findByText("live typescript / 2 events")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Replay next/i })).toBeDisabled();
+    const topRankedWarning = within(
+      screen.getByRole("complementary", { name: "Warning Rail" })
+    ).getByRole("button", {
+      name: /#1 critical.*No per-session permission boundary/i
+    });
+    expect(topRankedWarning).toBeInTheDocument();
+    await userEvent.click(topRankedWarning);
+    expect(screen.getByText("Provider write is exposed without a scoped grant.")).toBeInTheDocument();
     expect(
-      within(screen.getByRole("complementary", { name: "Warning Rail" })).getByRole("button", {
-        name: /No audit trail for external tool calls/i
-      })
+      screen.getByText("Gate create_issue behind a session-scoped permission check.")
     ).toBeInTheDocument();
     expect(screen.getByText("ok · glm-5.1")).toBeInTheDocument();
     expect(screen.getByText("ok / 2 repo rules")).toBeInTheDocument();

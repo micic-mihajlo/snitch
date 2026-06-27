@@ -1,13 +1,13 @@
 import { RotateCcw, StepForward } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { buildSnitchArtifacts, createStaticNarration, diffGraph } from "@snitch/graph";
+import { buildSnitchArtifacts, createStaticNarration, diffGraph, type SnitchWarning } from "@snitch/graph";
 import { ArtifactPanel } from "./components/ArtifactPanel";
 import { GraphCanvas } from "./components/GraphCanvas";
 import { SponsorLane } from "./components/SponsorLane";
 import { Timeline } from "./components/Timeline";
 import { WarningRail } from "./components/WarningRail";
 import { scopeGraph, type GraphScope } from "./lib/graphScope";
-import { useLiveSnitch } from "./lib/useLiveSnitch";
+import { type RankedWarningView, useLiveSnitch } from "./lib/useLiveSnitch";
 import { useReplay } from "./lib/useReplay";
 
 const task =
@@ -22,12 +22,20 @@ export default function App() {
   const previousSnapshot = live.previousSnapshot ?? replay.previousSnapshot;
   const visibleSnapshots = live.snapshot ? [currentSnapshot] : replay.snapshots;
   const reviewSnapshot = live.snapshot ?? replay.reviewSnapshot;
+  const rankedWarnings = useMemo(
+    () => applyRankings(currentSnapshot.warnings, live.rankedWarnings),
+    [currentSnapshot.warnings, live.rankedWarnings]
+  );
+  const rankingByWarningId = useMemo(
+    () => indexRankings(live.rankedWarnings),
+    [live.rankedWarnings]
+  );
   const [selectedWarningId, setSelectedWarningId] = useState<string | undefined>(
-    currentSnapshot.warnings[0]?.id
+    rankedWarnings[0]?.id
   );
   const selectedWarning =
-    currentSnapshot.warnings.find((warning) => warning.id === selectedWarningId) ??
-    currentSnapshot.warnings[0];
+    rankedWarnings.find((warning) => warning.id === selectedWarningId) ??
+    rankedWarnings[0];
   const diff = useMemo(
     () => diffGraph(previousSnapshot.graph, currentSnapshot.graph),
     [currentSnapshot, previousSnapshot]
@@ -45,8 +53,8 @@ export default function App() {
     [createdAt, live.artifacts, reviewSnapshot, visibleSnapshots]
   );
   const narration = useMemo(
-    () => createStaticNarration(diff, currentSnapshot.warnings),
-    [currentSnapshot.warnings, diff]
+    () => createStaticNarration(diff, rankedWarnings),
+    [rankedWarnings, diff]
   );
   const sponsorLane = live.sponsorLane ?? {
     narration,
@@ -60,10 +68,10 @@ export default function App() {
   );
 
   useEffect(() => {
-    if (!currentSnapshot.warnings.some((warning) => warning.id === selectedWarningId)) {
-      setSelectedWarningId(currentSnapshot.warnings[0]?.id);
+    if (!rankedWarnings.some((warning) => warning.id === selectedWarningId)) {
+      setSelectedWarningId(rankedWarnings[0]?.id);
     }
-  }, [currentSnapshot.warnings, selectedWarningId]);
+  }, [rankedWarnings, selectedWarningId]);
 
   function handleNext() {
     if (live.status === "live") {
@@ -149,8 +157,9 @@ export default function App() {
         </section>
 
         <WarningRail
-          warnings={currentSnapshot.warnings}
+          warnings={rankedWarnings}
           selectedWarning={selectedWarning}
+          rankingByWarningId={rankingByWarningId}
           onSelect={(warning) => setSelectedWarningId(warning.id)}
         />
       </section>
@@ -174,4 +183,44 @@ export default function App() {
 
 function capitalize(value: string): string {
   return `${value.slice(0, 1).toUpperCase()}${value.slice(1)}`;
+}
+
+function applyRankings(
+  warnings: SnitchWarning[],
+  rankings: RankedWarningView[] | undefined
+): SnitchWarning[] {
+  if (!rankings || rankings.length === 0) {
+    return warnings;
+  }
+
+  const rankingById = indexRankings(rankings);
+
+  return warnings
+    .map((warning) => {
+      const ranking = rankingById[warning.id];
+
+      if (!ranking) {
+        return warning;
+      }
+
+      if (!ranking.repairPrompt.trim()) {
+        return warning;
+      }
+
+      return {
+        ...warning,
+        repairPrompt: ranking.repairPrompt
+      };
+    })
+    .sort((left, right) => {
+      const leftRank = rankingById[left.id]?.rank ?? Number.MAX_SAFE_INTEGER;
+      const rightRank = rankingById[right.id]?.rank ?? Number.MAX_SAFE_INTEGER;
+      return leftRank - rightRank;
+    });
+}
+
+function indexRankings(
+  rankings: RankedWarningView[] | undefined
+): Record<string, RankedWarningView> {
+  return Object.fromEntries((rankings ?? []).map((ranking) => [ranking.warningId, ranking]));
 }

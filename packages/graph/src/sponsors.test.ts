@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   createCerebrasNarrationInput,
+  createCerebrasWarningTriageInput,
+  createFallbackWarningRankings,
   createStaticNarration,
   diffGraph,
   getDemoReplay,
   getReviewSnapshot,
   loadBackboardRepoRules,
   narrateWithCerebras,
+  rankWarningsWithCerebras,
   rememberBackboardWarningDecision
 } from "./index";
 
@@ -86,6 +89,85 @@ describe("Cerebras sponsor lane", () => {
     await expect(narrateWithCerebras({ apiKey: "", model: "gpt-oss-120b", input })).resolves.toMatchObject({
       status: "disabled"
     });
+  });
+
+  it("builds compact warning triage input for strict JSON ranking", () => {
+    const input = createCerebrasWarningTriageInput({
+      task: "Add the external issue-creation tool.",
+      warnings: reviewSnapshot.warnings,
+      repoRules: ["External tools require audit logging."]
+    });
+
+    expect(input.messages).toHaveLength(2);
+    expect(input.messages[0].content).toContain("Return strict JSON only");
+    expect(input.messages[1].content).toContain("\"rankedWarnings\"");
+    expect(input.messages[1].content).toContain("No audit trail for external tool calls");
+  });
+
+  it("parses Cerebras warning ranking JSON and fills missing warnings with fallback ranks", async () => {
+    const input = createCerebrasWarningTriageInput({
+      task: "Add the external issue-creation tool.",
+      warnings: reviewSnapshot.warnings,
+      repoRules: []
+    });
+    const result = await rankWarningsWithCerebras({
+      apiKey: "test-key",
+      model: "gpt-oss-120b",
+      input,
+      warnings: reviewSnapshot.warnings,
+      fetcher: async () =>
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    rankedWarnings: [
+                      {
+                        warningId: "warning:permission_scope_missing:create_issue",
+                        rank: 1,
+                        priority: "critical",
+                        reason: "Provider write is exposed without a scoped grant.",
+                        repairPrompt: "Gate create_issue behind a session-scoped permission check."
+                      }
+                    ]
+                  })
+                }
+              }
+            ]
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        )
+    });
+
+    expect(result.status).toBe("ok");
+    expect(result.model).toBe("gpt-oss-120b");
+    expect(result.rankedWarnings[0]).toEqual({
+      warningId: "warning:permission_scope_missing:create_issue",
+      rank: 1,
+      priority: "critical",
+      reason: "Provider write is exposed without a scoped grant.",
+      repairPrompt: "Gate create_issue behind a session-scoped permission check."
+    });
+    expect(result.rankedWarnings).toHaveLength(reviewSnapshot.warnings.length);
+  });
+
+  it("returns deterministic fallback rankings when warning triage is disabled", async () => {
+    const input = createCerebrasWarningTriageInput({
+      task: "Add the external issue-creation tool.",
+      warnings: reviewSnapshot.warnings,
+      repoRules: []
+    });
+    const result = await rankWarningsWithCerebras({
+      apiKey: "",
+      model: "gpt-oss-120b",
+      input,
+      warnings: reviewSnapshot.warnings
+    });
+
+    expect(result.status).toBe("disabled");
+    expect(result.rankedWarnings).toEqual(createFallbackWarningRankings(reviewSnapshot.warnings));
+    expect(result.rankedWarnings[0]?.warningId).toBe("warning:tool_audit_log_missing:create_issue");
   });
 });
 

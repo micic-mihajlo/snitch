@@ -290,7 +290,7 @@ h2 {
 
 .warning-item {
   display: grid;
-  grid-template-columns: 72px minmax(0, 1fr);
+  grid-template-columns: 72px 86px minmax(0, 1fr);
   gap: 10px;
   align-items: center;
   min-height: 58px;
@@ -322,6 +322,44 @@ h2 {
 
 .severity-info {
   background: var(--cyan);
+}
+
+.rank-badge {
+  display: inline-grid;
+  min-height: 24px;
+  place-items: center;
+  border: 1px solid var(--line);
+  color: var(--paper);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+}
+
+.rank-spacer {
+  display: block;
+  width: 86px;
+  min-height: 24px;
+}
+
+.rank-critical,
+.rank-high {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.rank-medium {
+  border-color: var(--copper);
+  color: var(--copper);
+}
+
+.rank-low {
+  border-color: var(--cyan);
+  color: var(--cyan);
+}
+
+.rank-reason {
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 0.82rem;
 }
 
 .repair-panel,

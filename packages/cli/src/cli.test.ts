@@ -194,8 +194,14 @@ describe("snitch cli", () => {
 
     expect(result.code).toBe(0);
     expect(result.stdout).toContain("Snitch sponsor artifact written");
+    expect(result.stdout).toContain("Ranked warnings: 4");
     expect(state.sponsors?.cerebras.status).toBe("disabled");
+    expect(state.sponsors?.cerebras.triageStatus).toBe("disabled");
     expect(state.sponsors?.backboard.status).toBe("disabled");
+    expect(state.sponsors?.rankedWarnings).toHaveLength(4);
+    expect(state.sponsors?.rankedWarnings[0]?.warningId).toBe(
+      "warning:tool_audit_log_missing:create_issue"
+    );
     expect(state.sponsors?.narration).toContain("Snitch saw 10 added nodes");
   });
 

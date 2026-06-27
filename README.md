@@ -17,7 +17,7 @@ This repo now includes a working first slice:
 - target-aware hook refresh: file-changing events regenerate code-derived artifacts
 - local live server: `pnpm snitch watch` serves `.snitch` artifacts to the dashboard
 - graph scope controls for all, changed, and selected-warning impact views
-- sponsor artifact lane: `pnpm snitch sponsors` writes Cerebras narration and Backboard repo-rule status
+- sponsor artifact lane: `pnpm snitch sponsors` writes Cerebras narration, warning ranking, repair prompts, and Backboard repo-rule status
 - scripted repair pass: `pnpm demo:repair` adds the missing companion work and regenerates warning-free artifacts
 - one-command live demo runner: `pnpm demo:live`
 - prepared demo assistant app under `apps/demo-app`
@@ -36,7 +36,7 @@ pnpm install
 pnpm demo:live
 ```
 
-`pnpm demo:live` prepares code-derived artifacts, writes sponsor status, starts `snitch watch` at `http://127.0.0.1:4767`, and starts the dashboard pointed at that local server. Plain `pnpm dev` stays in clean replay fallback mode. The first screen is the Snitch inspection surface: live graph, warning rail, timeline, sponsor lane, and PR artifact preview.
+`pnpm demo:live` prepares code-derived artifacts, writes sponsor status, starts `snitch watch` at `http://127.0.0.1:4767`, and starts the dashboard pointed at that local server. Plain `pnpm dev` stays in clean replay fallback mode. The first screen is the Snitch inspection surface: live graph, ranked warning rail, timeline, sponsor lane, and PR artifact preview.
 
 Useful commands:
 

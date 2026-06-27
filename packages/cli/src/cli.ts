@@ -8,12 +8,15 @@ import { extractTypeScriptGraph } from "@snitch/extractor-ts";
 import {
   buildSnitchArtifacts,
   createCerebrasNarrationInput,
+  createCerebrasWarningTriageInput,
   createStaticNarration,
   diffGraph,
   getDemoReplay,
   getReviewSnapshot,
   loadBackboardRepoRules,
   narrateWithCerebras,
+  rankWarningsWithCerebras,
+  type RankedWarning,
   type ReplaySnapshot,
   type SnitchArtifacts,
   type SnitchGraph,
@@ -123,12 +126,14 @@ type SponsorArtifact = {
   narration: string;
   cerebras: {
     status: SponsorResultStatus;
+    triageStatus: SponsorResultStatus;
     model?: string;
   };
   backboard: {
     status: SponsorResultStatus;
     rules: string[];
   };
+  rankedWarnings: RankedWarning[];
 };
 
 type SponsorResultStatus = "ok" | "disabled" | "fallback";
@@ -629,6 +634,26 @@ async function writeSponsorArtifacts(cwd: string, options: SponsorOptions): Prom
   }
 
   const cerebras = await narrateWithCerebras(cerebrasInput);
+  const triageInput = createCerebrasWarningTriageInput({
+    task,
+    warnings,
+    repoRules: backboard.rules
+  });
+  const warningTriageInput: Parameters<typeof rankWarningsWithCerebras>[0] = {
+    model: env.CEREBRAS_MODEL || "gpt-oss-120b",
+    input: triageInput,
+    warnings
+  };
+
+  if (env.CEREBRAS_API_KEY) {
+    warningTriageInput.apiKey = env.CEREBRAS_API_KEY;
+  }
+
+  if (fetcher) {
+    warningTriageInput.fetcher = fetcher;
+  }
+
+  const warningTriage = await rankWarningsWithCerebras(warningTriageInput);
   const artifact: SponsorArtifact = {
     generatedAt: options.now.toISOString(),
     narration:
@@ -636,24 +661,29 @@ async function writeSponsorArtifacts(cwd: string, options: SponsorOptions): Prom
         ? createStaticNarration(diff, warnings)
         : cerebras.text,
     cerebras: {
-      status: cerebras.status
+      status: cerebras.status,
+      triageStatus: warningTriage.status
     },
     backboard: {
       status: backboard.status,
       rules: backboard.rules
-    }
+    },
+    rankedWarnings: warningTriage.rankedWarnings
   };
 
   if (cerebras.model) {
     artifact.cerebras.model = cerebras.model;
+  } else if (warningTriage.model) {
+    artifact.cerebras.model = warningTriage.model;
   }
 
   await writeJson(cwd, ".snitch/sponsors.json", artifact);
 
   return [
     "Snitch sponsor artifact written.",
-    `- Cerebras: ${artifact.cerebras.status}${artifact.cerebras.model ? ` (${artifact.cerebras.model})` : ""}`,
+    `- Cerebras: ${artifact.cerebras.status} narration / ${artifact.cerebras.triageStatus} triage${artifact.cerebras.model ? ` (${artifact.cerebras.model})` : ""}`,
     `- Backboard: ${artifact.backboard.status} / ${artifact.backboard.rules.length} rules`,
+    `- Ranked warnings: ${artifact.rankedWarnings.length}`,
     "- Updated: .snitch/sponsors.json"
   ].join("\n") + "\n";
 }

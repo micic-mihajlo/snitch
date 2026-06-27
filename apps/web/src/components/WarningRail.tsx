@@ -1,13 +1,17 @@
 import { ShieldAlert } from "lucide-react";
 import type { SnitchWarning } from "@snitch/graph";
+import type { RankedWarningView } from "../lib/useLiveSnitch";
 
 type Props = {
   warnings: SnitchWarning[];
   selectedWarning: SnitchWarning | undefined;
+  rankingByWarningId?: Record<string, RankedWarningView>;
   onSelect: (warning: SnitchWarning) => void;
 };
 
-export function WarningRail({ warnings, selectedWarning, onSelect }: Props) {
+export function WarningRail({ warnings, selectedWarning, rankingByWarningId, onSelect }: Props) {
+  const selectedRanking = selectedWarning ? rankingByWarningId?.[selectedWarning.id] : undefined;
+
   return (
     <aside className="warning-panel" aria-label="Warning Rail">
       <div className="panel-heading">
@@ -22,23 +26,35 @@ export function WarningRail({ warnings, selectedWarning, onSelect }: Props) {
         {warnings.length === 0 ? (
           <p className="empty-state">No active warnings in this snapshot.</p>
         ) : (
-          warnings.map((warning) => (
-            <button
-              key={warning.id}
-              type="button"
-              className={warning.id === selectedWarning?.id ? "warning-item selected" : "warning-item"}
-              onClick={() => onSelect(warning)}
-            >
-              <span className={`severity severity-${warning.severity}`}>{warning.severity}</span>
-              <span>{warning.title}</span>
-            </button>
-          ))
+          warnings.map((warning) => {
+            const ranking = rankingByWarningId?.[warning.id];
+
+            return (
+              <button
+                key={warning.id}
+                type="button"
+                className={warning.id === selectedWarning?.id ? "warning-item selected" : "warning-item"}
+                onClick={() => onSelect(warning)}
+              >
+                <span className={`severity severity-${warning.severity}`}>{warning.severity}</span>
+                {ranking ? (
+                  <span className={`rank-badge rank-${ranking.priority}`}>
+                    #{ranking.rank} {ranking.priority}
+                  </span>
+                ) : (
+                  <span className="rank-spacer" aria-hidden="true" />
+                )}
+                <span>{warning.title}</span>
+              </button>
+            );
+          })
         )}
       </div>
 
       {selectedWarning ? (
         <div className="repair-panel" role="region" aria-label="Selected repair prompt">
           <p className="eyebrow">Repair prompt</p>
+          {selectedRanking ? <p className="rank-reason">{selectedRanking.reason}</p> : null}
           <p>{selectedWarning.repairPrompt}</p>
         </div>
       ) : null}

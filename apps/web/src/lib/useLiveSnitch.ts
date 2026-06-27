@@ -24,13 +24,23 @@ type LiveApiState = {
     narration: string;
     cerebras: {
       status: string;
+      triageStatus?: string;
       model?: string;
     };
     backboard: {
       status: string;
       rules: string[];
     };
+    rankedWarnings: RankedWarningView[];
   };
+};
+
+export type RankedWarningView = {
+  warningId: string;
+  rank: number;
+  priority: "critical" | "high" | "medium" | "low";
+  reason: string;
+  repairPrompt: string;
 };
 
 type LiveSnitchState = {
@@ -44,6 +54,7 @@ type LiveSnitchState = {
     cerebrasStatus: string;
     backboardStatus: string;
   };
+  rankedWarnings?: RankedWarningView[];
   graphSourceLabel: string;
   eventCount?: number;
 };
@@ -106,6 +117,7 @@ export function useLiveSnitch(): LiveSnitchState {
               ),
               backboardStatus: apiState.sponsors.backboard.status
             };
+            nextState.rankedWarnings = apiState.sponsors.rankedWarnings;
           }
 
           return nextState;
