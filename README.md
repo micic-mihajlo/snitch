@@ -16,6 +16,7 @@ This repo now includes a working first slice:
 - narrow TypeScript extractor for real repo graph generation
 - target-aware hook refresh: file-changing events regenerate code-derived artifacts
 - local live server: `pnpm snitch watch` serves `.snitch` artifacts to the dashboard
+- graph scope controls for all, changed, and selected-warning impact views
 - prepared demo assistant app under `apps/demo-app`
 - deterministic graph IR, hashing, diffing, and last-good-graph behavior
 - replayed issue-tool demo graph with missing companion warnings

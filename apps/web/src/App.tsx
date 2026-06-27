@@ -6,6 +6,7 @@ import { GraphCanvas } from "./components/GraphCanvas";
 import { SponsorLane } from "./components/SponsorLane";
 import { Timeline } from "./components/Timeline";
 import { WarningRail } from "./components/WarningRail";
+import { scopeGraph, type GraphScope } from "./lib/graphScope";
 import { useLiveSnitch } from "./lib/useLiveSnitch";
 import { useReplay } from "./lib/useReplay";
 
@@ -16,6 +17,7 @@ export default function App() {
   const replay = useReplay();
   const live = useLiveSnitch();
   const [createdAt] = useState(() => new Date().toISOString());
+  const [graphScope, setGraphScope] = useState<GraphScope>("all");
   const currentSnapshot = live.snapshot ?? replay.currentSnapshot;
   const previousSnapshot = live.previousSnapshot ?? replay.previousSnapshot;
   const visibleSnapshots = live.snapshot ? [currentSnapshot] : replay.snapshots;
@@ -45,6 +47,10 @@ export default function App() {
   const narration = useMemo(
     () => createStaticNarration(diff, currentSnapshot.warnings),
     [currentSnapshot.warnings, diff]
+  );
+  const scopedGraph = useMemo(
+    () => scopeGraph(currentSnapshot.graph, diff, graphScope, selectedWarning?.id),
+    [currentSnapshot.graph, diff, graphScope, selectedWarning?.id]
   );
 
   useEffect(() => {
@@ -113,11 +119,27 @@ export default function App() {
               <p className="eyebrow">Current graph</p>
               <h2>Live System Map</h2>
             </div>
-            <output className="diff-meter">
-              +{diff.summary.addedNodes} nodes / +{diff.summary.addedEdges} edges
-            </output>
+            <div className="map-tools">
+              <div className="segmented-control" aria-label="Graph scope">
+                {(["all", "changed", "impacted"] as const).map((scope) => (
+                  <button
+                    key={scope}
+                    type="button"
+                    className={scope === graphScope ? "segment selected" : "segment"}
+                    aria-pressed={scope === graphScope}
+                    onClick={() => setGraphScope(scope)}
+                  >
+                    {scope === "impacted" ? "Impact" : capitalize(scope)}
+                  </button>
+                ))}
+              </div>
+              <output className="diff-meter">
+                {scopedGraph.nodes.length}/{currentSnapshot.graph.nodes.length} nodes · +
+                {diff.summary.addedNodes} / +{diff.summary.addedEdges}
+              </output>
+            </div>
           </div>
-          <GraphCanvas graph={currentSnapshot.graph} />
+          <GraphCanvas graph={scopedGraph} />
         </section>
 
         <WarningRail
@@ -142,4 +164,8 @@ export default function App() {
       </section>
     </main>
   );
+}
+
+function capitalize(value: string): string {
+  return `${value.slice(0, 1).toUpperCase()}${value.slice(1)}`;
 }

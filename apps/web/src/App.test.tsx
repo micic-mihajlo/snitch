@@ -51,6 +51,21 @@ describe("Snitch dashboard", () => {
     expect(screen.getByText("Create issue tool")).toBeInTheDocument();
   });
 
+  it("can scope the graph to the selected warning impact", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    expect(screen.getByText(/10\/10 nodes/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Impact" }));
+
+    expect(screen.getByText(/6\/10 nodes/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Impact" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
+  });
+
   it("switches from replay fallback to live Snitch artifacts", async () => {
     const replay = getDemoReplay();
     const snapshot = getReviewSnapshot(replay);

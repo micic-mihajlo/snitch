@@ -176,6 +176,7 @@ h2 {
 
 .panel-heading {
   justify-content: space-between;
+  gap: 12px;
   min-height: 70px;
   padding: 14px;
   border-bottom: 1px solid var(--line);
@@ -188,6 +189,40 @@ h2 {
 .diff-meter {
   color: var(--cyan);
   font-size: 0.85rem;
+}
+
+.map-tools {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.segmented-control {
+  display: inline-grid;
+  grid-template-columns: repeat(3, minmax(76px, 1fr));
+  min-height: 34px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+}
+
+.segment {
+  min-width: 76px;
+  border: 0;
+  border-right: 1px solid var(--line);
+  color: var(--muted);
+  background: rgba(28, 27, 24, 0.84);
+  cursor: pointer;
+}
+
+.segment:last-child {
+  border-right: 0;
+}
+
+.segment:hover,
+.segment.selected {
+  color: var(--ink);
+  background: var(--acid);
 }
 
 .graph-frame {
