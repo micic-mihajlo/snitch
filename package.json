@@ -10,6 +10,7 @@
     "typecheck": "pnpm -r typecheck",
     "snitch": "tsx packages/cli/src/main.ts",
     "dev": "pnpm --filter @snitch/web dev",
+    "dev:live": "VITE_SNITCH_LIVE_URL=http://127.0.0.1:4767 pnpm --filter @snitch/web dev",
     "verify:browser": "tsx scripts/verify-browser.ts",
     "demo:artifacts": "tsx scripts/generate-demo-artifacts.ts",
     "demo:extract": "tsx scripts/generate-extracted-artifacts.ts",

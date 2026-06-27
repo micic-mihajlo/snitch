@@ -15,6 +15,7 @@ This repo now includes a working first slice:
 - normalized event model with payload hashing and safe summaries
 - narrow TypeScript extractor for real repo graph generation
 - target-aware hook refresh: file-changing events regenerate code-derived artifacts
+- local live server: `pnpm snitch watch` serves `.snitch` artifacts to the dashboard
 - prepared demo assistant app under `apps/demo-app`
 - deterministic graph IR, hashing, diffing, and last-good-graph behavior
 - replayed issue-tool demo graph with missing companion warnings
@@ -30,10 +31,11 @@ See [docs/strategy-2026-06-27.md](docs/strategy-2026-06-27.md) for the researche
 pnpm install
 pnpm snitch init --agent all --target apps/demo-app --task "Add an external issue-creation tool to this coding assistant"
 printf '{"tool_name":"apply_patch","file_path":"src/tools/create-issue.ts"}' | pnpm snitch event --source codex --hook PostToolUse
-pnpm dev
+pnpm snitch watch
+pnpm dev:live
 ```
 
-`pnpm snitch init` creates the local background state, hook adapters, and analysis target. File-changing `snitch event` calls refresh the TypeScript graph and write `.snitch` graph, Mermaid, handoff, and PR artifacts. The dashboard runs through `apps/web` and opens a local Vite server. The first screen is the Snitch inspection surface: live graph, warning rail, timeline, sponsor lane, and PR artifact preview.
+`pnpm snitch init` creates the local background state, hook adapters, and analysis target. File-changing `snitch event` calls refresh the TypeScript graph and write `.snitch` graph, warnings, Mermaid, handoff, and PR artifacts. `pnpm snitch watch` serves those artifacts at `http://127.0.0.1:4767`, and `pnpm dev:live` points the dashboard at that local server. Plain `pnpm dev` stays in clean replay fallback mode. The first screen is the Snitch inspection surface: live graph, warning rail, timeline, sponsor lane, and PR artifact preview.
 
 Useful commands:
 
@@ -41,6 +43,8 @@ Useful commands:
 pnpm snitch init --agent all --target apps/demo-app --task "Watch this coding-agent session"
 printf '{"tool_name":"apply_patch","file_path":"src/tools/create-issue.ts"}' | pnpm snitch event --source codex --hook PostToolUse
 pnpm snitch analyze --target apps/demo-app --task "Add an external issue-creation tool"
+pnpm snitch watch --port 4767
+pnpm dev:live
 pnpm snitch status
 pnpm snitch finalize
 pnpm test
@@ -80,10 +84,17 @@ The generated adapter calls back into this Snitch checkout and records:
 It does not store the raw hook payload. File-changing events refresh the configured TypeScript target and regenerate:
 
 - `.snitch/graph.json`
+- `.snitch/warnings.json`
 - `.snitch/timeline.jsonl`
 - `.snitch/mermaid.mmd`
 - `.snitch/handoff.md`
 - `.snitch/pr-comment.md`
+
+`pnpm snitch watch` exposes:
+
+- `GET /health`
+- `GET /api/state`
+- `GET /api/events` for Server-Sent Events
 
 For code-derived artifacts, run:
 

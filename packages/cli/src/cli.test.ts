@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { runCli } from "./cli";
+import { readLiveState, runCli } from "./cli";
 
 const tempDirs: string[] = [];
 const now = new Date("2026-06-27T12:00:00.000Z");
@@ -158,6 +158,25 @@ describe("snitch cli", () => {
     await expect(readFile(join(cwd, ".snitch/pr-comment.md"), "utf8")).resolves.toContain(
       "No audit trail for external tool calls"
     );
+  });
+
+  it("reads live dashboard state from Snitch artifacts", async () => {
+    const cwd = await tempRepo();
+
+    await runCli(["analyze", "--target", demoRoot, "--task", "Wire an issue tool"], {
+      cwd,
+      now
+    });
+
+    const state = await readLiveState(cwd);
+
+    expect(state.ok).toBe(true);
+    expect(state.graph.nodes.some((node) => node.label === "api.github.com API")).toBe(true);
+    expect(state.warnings.some((warning) => warning.title === "No audit trail for external tool calls")).toBe(
+      true
+    );
+    expect(state.artifacts.mermaid).toContain("tool_create_issue");
+    expect(state.artifacts.prComment).toContain("Snitch Review");
   });
 
   it("finalizes PR-ready artifacts from the background session", async () => {

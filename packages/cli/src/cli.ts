@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { createServer, type ServerResponse } from "node:http";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { normalizeSnitchEvent, type SnitchEvent } from "@snitch/events";
@@ -8,7 +10,9 @@ import {
   getDemoReplay,
   getReviewSnapshot,
   type ReplaySnapshot,
-  type SnitchArtifacts
+  type SnitchArtifacts,
+  type SnitchGraph,
+  type SnitchWarning
 } from "../../graph/src/index";
 
 type CliResult = {
@@ -93,6 +97,21 @@ type EventGraphUpdate =
       message: string;
     };
 
+type LiveState = {
+  ok: true;
+  cwd: string;
+  generatedAt: string;
+  session: unknown;
+  graph: SnitchGraph;
+  warnings: SnitchWarning[];
+  artifacts: {
+    mermaid: string;
+    prComment: string;
+    handoff: string;
+    timeline: string;
+  };
+};
+
 const eventsFile = ".snitch/events.jsonl";
 const hookFile = ".snitch/hooks/codex-hook.mjs";
 const defaultTask =
@@ -133,6 +152,20 @@ export async function runCli(args: string[], options: RunCliOptions = {}): Promi
       const target = resolve(cwd, String(parsed.flags.get("target") ?? "."));
       const task = String(parsed.flags.get("task") ?? defaultTask);
       return ok(await analyzeTypeScriptRepo(cwd, target, task, now));
+    }
+
+    if (command === "watch") {
+      const port = parsePort(parsed.flags.get("port"));
+      const intervalMs = parseInterval(parsed.flags.get("interval"));
+      const url = await startLiveServer(cwd, port, intervalMs);
+      return ok(
+        [
+          "Snitch live server started.",
+          `- URL: ${url}`,
+          "- State: /api/state",
+          "- Events: /api/events"
+        ].join("\n") + "\n"
+      );
     }
 
     if (command === "finalize") {
@@ -391,6 +424,189 @@ async function ensureDirs(cwd: string): Promise<void> {
   await mkdir(resolve(cwd, ".snitch/hooks"), { recursive: true });
 }
 
+async function startLiveServer(cwd: string, port: number, intervalMs: number): Promise<string> {
+  const server = createServer(async (request, response) => {
+    const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
+
+    if (request.method === "OPTIONS") {
+      writeCorsHeaders(response);
+      response.writeHead(204);
+      response.end();
+      return;
+    }
+
+    if (request.method === "GET" && requestUrl.pathname === "/health") {
+      sendJson(response, 200, { ok: true });
+      return;
+    }
+
+    if (request.method === "GET" && requestUrl.pathname === "/api/state") {
+      try {
+        sendJson(response, 200, await readLiveState(cwd));
+      } catch (error) {
+        sendError(response, error);
+      }
+      return;
+    }
+
+    if (request.method === "GET" && requestUrl.pathname === "/api/events") {
+      handleLiveEvents(cwd, response, intervalMs);
+      request.on("close", () => response.end());
+      return;
+    }
+
+    sendJson(response, 404, { ok: false, error: "Not found" });
+  });
+
+  await new Promise<void>((resolveListen, rejectListen) => {
+    server.once("error", rejectListen);
+    server.listen(port, "127.0.0.1", () => {
+      server.off("error", rejectListen);
+      resolveListen();
+    });
+  });
+
+  const address = server.address();
+  const actualPort = typeof address === "object" && address ? address.port : port;
+
+  return `http://127.0.0.1:${actualPort}`;
+}
+
+export async function readLiveState(cwd: string): Promise<LiveState> {
+  const graph = JSON.parse(await readFile(resolve(cwd, ".snitch/graph.json"), "utf8")) as SnitchGraph;
+  const warningsText = await readTextIfExists(cwd, ".snitch/warnings.json");
+  const warnings = warningsText
+    ? (JSON.parse(warningsText) as SnitchWarning[])
+    : warningsFromGraph(graph);
+  const sessionText = await readTextIfExists(cwd, ".snitch/session.json");
+
+  return {
+    ok: true,
+    cwd,
+    generatedAt: new Date().toISOString(),
+    session: sessionText ? JSON.parse(sessionText) : null,
+    graph,
+    warnings,
+    artifacts: {
+      mermaid: await readTextIfExists(cwd, ".snitch/mermaid.mmd"),
+      prComment: await readTextIfExists(cwd, ".snitch/pr-comment.md"),
+      handoff: await readTextIfExists(cwd, ".snitch/handoff.md"),
+      timeline: await readTextIfExists(cwd, ".snitch/timeline.jsonl")
+    }
+  };
+}
+
+function handleLiveEvents(cwd: string, response: ServerResponse, intervalMs: number): void {
+  writeCorsHeaders(response);
+  response.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive"
+  });
+
+  let lastHash = "";
+  let closed = false;
+
+  async function sendIfChanged(): Promise<void> {
+    if (closed) {
+      return;
+    }
+
+    try {
+      const state = await readLiveState(cwd);
+      const stateHash = hashLiveState(state);
+
+      if (stateHash !== lastHash) {
+        lastHash = stateHash;
+        response.write(`event: state\ndata: ${JSON.stringify(state)}\n\n`);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      response.write(`event: error\ndata: ${JSON.stringify({ ok: false, error: message })}\n\n`);
+    }
+  }
+
+  void sendIfChanged();
+  const interval = setInterval(() => void sendIfChanged(), intervalMs);
+
+  response.on("close", () => {
+    closed = true;
+    clearInterval(interval);
+  });
+}
+
+function sendJson(response: ServerResponse, status: number, value: unknown): void {
+  writeCorsHeaders(response);
+  response.writeHead(status, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-cache"
+  });
+  response.end(`${JSON.stringify(value)}\n`);
+}
+
+function sendError(response: ServerResponse, error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  sendJson(response, 500, { ok: false, error: message });
+}
+
+function writeCorsHeaders(response: ServerResponse): void {
+  response.setHeader("Access-Control-Allow-Origin", "*");
+  response.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  response.setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
+
+async function readTextIfExists(cwd: string, path: string): Promise<string> {
+  try {
+    return await readFile(resolve(cwd, path), "utf8");
+  } catch {
+    return "";
+  }
+}
+
+function warningsFromGraph(graph: SnitchGraph): SnitchWarning[] {
+  return graph.nodes
+    .filter((node) => node.kind === "warning")
+    .map((node) => {
+      const meta = node.meta ?? {};
+      const severity = typeof meta.severity === "string" ? meta.severity : "medium";
+      const evidence = Array.isArray(meta.evidence)
+        ? meta.evidence.filter((item): item is string => typeof item === "string")
+        : [];
+
+      const warning: SnitchWarning = {
+        id: node.id,
+        kind: "warning",
+        severity: isWarningSeverity(severity) ? severity : "medium",
+        title: node.label,
+        message: typeof meta.message === "string" ? meta.message : node.label,
+        evidence
+      };
+
+      if (typeof meta.repairPrompt === "string") {
+        warning.repairPrompt = meta.repairPrompt;
+      }
+
+      return warning;
+    });
+}
+
+function isWarningSeverity(value: string): value is SnitchWarning["severity"] {
+  return value === "info" || value === "low" || value === "medium" || value === "high";
+}
+
+function hashJson(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function hashLiveState(state: LiveState): string {
+  return hashJson({
+    session: state.session,
+    graph: state.graph,
+    warnings: state.warnings,
+    artifacts: state.artifacts
+  });
+}
+
 async function updateGraphForEvent(
   cwd: string,
   input: {
@@ -629,7 +845,14 @@ function createSession(input: {
     graphSource: input.graphSource,
     analysisTarget: input.analysisTarget,
     eventsPath: eventsFile,
-    artifacts: ["graph.json", "timeline.jsonl", "mermaid.mmd", "handoff.md", "pr-comment.md"]
+    artifacts: [
+      "graph.json",
+      "warnings.json",
+      "timeline.jsonl",
+      "mermaid.mmd",
+      "handoff.md",
+      "pr-comment.md"
+    ]
   };
 }
 
@@ -901,6 +1124,24 @@ function parseAgents(value: string | true | undefined): AgentTarget[] {
   return validAgents.length > 0 ? unique(validAgents) : ["codex"];
 }
 
+function parsePort(value: string | true | undefined): number {
+  if (!value || value === true) {
+    return 4767;
+  }
+
+  const port = Number(value);
+  return Number.isInteger(port) && port >= 0 && port < 65536 ? port : 4767;
+}
+
+function parseInterval(value: string | true | undefined): number {
+  if (!value || value === true) {
+    return 750;
+  }
+
+  const interval = Number(value);
+  return Number.isInteger(interval) && interval >= 100 ? interval : 750;
+}
+
 function isAgentTarget(value: string): value is AgentTarget {
   return value === "codex" || value === "claude" || value === "opencode";
 }
@@ -925,6 +1166,7 @@ function helpText(): string {
     "  snitch init [--cwd <repo>] [--agent codex|claude|opencode|all] [--target <ts-repo>] [--task <task>]",
     "  snitch event [--cwd <repo>] [--source <agent>] [--hook <hook>] < stdin-json",
     "  snitch analyze [--cwd <output-repo>] [--target <ts-repo>] [--task <task>]",
+    "  snitch watch [--cwd <repo>] [--port <port>] [--interval <ms>]",
     "  snitch status [--cwd <repo>]",
     "  snitch finalize [--cwd <repo>]"
   ].join("\n") + "\n";

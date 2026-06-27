@@ -20,12 +20,14 @@ describe("buildSnitchArtifacts", () => {
       "mermaid.mmd",
       "pr-comment.md",
       "session.json",
-      "timeline.jsonl"
+      "timeline.jsonl",
+      "warnings.json"
     ]);
     expect(JSON.parse(artifacts["session.json"]).runId).toBe("snitch-demo");
     expect(JSON.parse(artifacts["graph.json"]).nodes).toHaveLength(
       reviewSnapshot.graph.nodes.length
     );
+    expect(JSON.parse(artifacts["warnings.json"])).toHaveLength(reviewSnapshot.warnings.length);
     expect(artifacts["timeline.jsonl"].split("\n")).toHaveLength(replay.length);
     expect(artifacts["mermaid.mmd"]).toContain("tool_create_issue");
     expect(artifacts["handoff.md"]).toContain("Missing companion warnings");

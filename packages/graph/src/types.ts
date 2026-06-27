@@ -127,6 +127,7 @@ export type SnitchArtifactInput = {
 export type SnitchArtifacts = {
   "session.json": string;
   "graph.json": string;
+  "warnings.json": string;
   "timeline.jsonl": string;
   "mermaid.mmd": string;
   "handoff.md": string;

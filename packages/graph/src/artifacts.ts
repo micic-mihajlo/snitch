@@ -18,6 +18,7 @@ export function buildSnitchArtifacts(input: SnitchArtifactInput): SnitchArtifact
       2
     ),
     "graph.json": JSON.stringify(input.reviewSnapshot.graph, null, 2),
+    "warnings.json": JSON.stringify(input.reviewSnapshot.warnings, null, 2),
     "timeline.jsonl": buildTimelineJsonl(input.replay),
     "mermaid.mmd": mermaid,
     "handoff.md": buildHandoff(input.reviewSnapshot, input.task),
