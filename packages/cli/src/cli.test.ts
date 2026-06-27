@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { applyDemoRepair } from "../../../scripts/apply-demo-repair";
-import { readLiveState, refreshWatchedTarget, runCli } from "./cli";
+import { ingestHookEvent, readLiveState, refreshWatchedTarget, runCli } from "./cli";
 
 const tempDirs: string[] = [];
 const now = new Date("2026-06-27T12:00:00.000Z");
@@ -179,6 +179,37 @@ describe("snitch cli", () => {
     await expect(readFile(join(cwd, ".snitch/graph.json"), "utf8")).resolves.toContain(
       "api.github.com API"
     );
+  });
+
+  it("ingests live hook events through the watcher HTTP path", async () => {
+    const cwd = await tempRepo();
+    const payload = JSON.stringify({
+      tool_name: "apply_patch",
+      file_path: "src/tools/create-issue.ts",
+      command: "apply private-token-value"
+    });
+
+    await runCli(["init", "--target", demoRoot, "--task", "Wire an issue tool"], { cwd, now });
+    const result = await ingestHookEvent(cwd, {
+      source: "claude",
+      hook: "PostToolUse",
+      body: payload,
+      now: new Date("2026-06-27T12:02:30.000Z")
+    });
+    const events = await readFile(join(cwd, ".snitch/events.jsonl"), "utf8");
+    const state = await readLiveState(cwd);
+
+    expect(result.ok).toBe(true);
+    expect(result.message).toContain("Snitch captured claude:PostToolUse");
+    expect(events).toContain("apply_patch");
+    expect(events).toContain("src/tools/create-issue.ts");
+    expect(events).toContain("commandHash");
+    expect(events).not.toContain("private-token-value");
+    expect(state.session).toMatchObject({
+      graphSource: "typescript",
+      eventCount: 1
+    });
+    expect(state.graph.nodes.some((node) => node.label === "api.github.com API")).toBe(true);
   });
 
   it("prints status for the agent background loop", async () => {

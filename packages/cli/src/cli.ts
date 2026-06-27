@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { chmod, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
-import { createServer, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { normalizeSnitchEvent, type SnitchEvent } from "@snitch/events";
@@ -170,6 +170,11 @@ type WatchRefreshResult = {
   message: string;
 };
 
+type HookIngestResult = {
+  ok: true;
+  message: string;
+};
+
 type GitHubComment = {
   id: number;
   body?: string;
@@ -279,7 +284,8 @@ export async function runCli(args: string[], options: RunCliOptions = {}): Promi
           "Snitch live server started.",
           `- URL: ${url}`,
           "- State: /api/state",
-          "- Events: /api/events",
+          "- Events: GET /api/events",
+          "- Hook ingest: POST /api/events?source=<agent>&hook=<hook>",
           `- File watcher: ${fileWatch ? `enabled (${scanIntervalMs}ms)` : "disabled"}`
         ].join("\n") + "\n"
       );
@@ -715,6 +721,27 @@ async function startLiveServer(cwd: string, options: LiveServerOptions): Promise
       return;
     }
 
+    if (request.method === "POST" && requestUrl.pathname === "/api/events") {
+      try {
+        const source = requestUrl.searchParams.get("source") ?? "agent";
+        const hook = requestUrl.searchParams.get("hook") ?? "agent-event";
+        const body = await readRequestBody(request);
+        sendJson(
+          response,
+          202,
+          await ingestHookEvent(cwd, {
+            source,
+            hook,
+            body,
+            now: new Date()
+          })
+        );
+      } catch (error) {
+        sendError(response, error);
+      }
+      return;
+    }
+
     sendJson(response, 404, { ok: false, error: "Not found" });
   });
 
@@ -745,6 +772,28 @@ async function startLiveServer(cwd: string, options: LiveServerOptions): Promise
   const actualPort = typeof address === "object" && address ? address.port : options.port;
 
   return `http://127.0.0.1:${actualPort}`;
+}
+
+export async function ingestHookEvent(
+  cwd: string,
+  input: {
+    source: string;
+    hook: string;
+    body: string;
+    now: Date;
+  }
+): Promise<HookIngestResult> {
+  const message = await recordSnitchEvent(cwd, {
+    source: input.source,
+    hook: input.hook,
+    stdin: input.body,
+    now: input.now
+  });
+
+  return {
+    ok: true,
+    message
+  };
 }
 
 function startFileRefreshLoop(
@@ -1454,8 +1503,26 @@ function sendError(response: ServerResponse, error: unknown): void {
 
 function writeCorsHeaders(response: ServerResponse): void {
   response.setHeader("Access-Control-Allow-Origin", "*");
-  response.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  response.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   response.setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
+
+async function readRequestBody(request: IncomingMessage, maxBytes = 1_000_000): Promise<string> {
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    bytes += buffer.length;
+
+    if (bytes > maxBytes) {
+      throw new Error(`Hook payload exceeds ${maxBytes} bytes.`);
+    }
+
+    chunks.push(buffer);
+  }
+
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 async function readTextIfExists(cwd: string, path: string): Promise<string> {
