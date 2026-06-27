@@ -6,6 +6,7 @@ import {
   SyntaxKind,
   type CallExpression,
   type IfStatement,
+  type ImportDeclaration,
   type Node as TsMorphNode,
   type ObjectLiteralExpression,
   type SourceFile,
@@ -399,27 +400,42 @@ function extractSchemaSurface(cwd: string, sourceFile: SourceFile, graph: Mutabl
 
 function extractProviderSurface(cwd: string, sourceFile: SourceFile, graph: MutableGraph): void {
   const file = relativePath(cwd, sourceFile);
+  const imports = collectExternalImports(sourceFile);
+  const sdkInstances = collectSdkInstances(sourceFile, imports);
 
   for (const call of sourceFile.getDescendantsOfKind(SyntaxKind.CallExpression)) {
-    if (call.getExpression().getText() === "fetch") {
-      const firstArg = call.getArguments()[0];
-      const url = firstArg ? getStringLiteralValue(firstArg) : undefined;
-      const host = url ? safeHost(url) : undefined;
+    const external = identifyExternalCall(call, imports, sdkInstances);
 
-      if (host) {
-        const line = call.getStartLineNumber();
-        addNode(graph, {
-          id: `external:${host}`,
-          kind: "external",
-          label: `${host} API`,
-          file,
-          line,
-          meta: {
-            url
-          }
-        });
-        graph.externalAccesses.push({ nodeId: `external:${host}`, file, line });
-      }
+    if (external) {
+      const line = call.getStartLineNumber();
+      addNode(graph, {
+        id: external.nodeId,
+        kind: "external",
+        label: external.label,
+        file,
+        line,
+        meta: external.url ? { url: external.url, client: external.client } : { client: external.client }
+      });
+      graph.externalAccesses.push({ nodeId: external.nodeId, file, line });
+    }
+  }
+
+  // `new Stripe(...)` / `new OpenAI(...)` etc. introduce an external capability even before
+  // the first request, so record the construction site too.
+  for (const newExpression of sourceFile.getDescendantsOfKind(SyntaxKind.NewExpression)) {
+    const provider = sdkProviderForIdentifier(newExpression.getExpression().getText(), imports);
+
+    if (provider) {
+      const line = newExpression.getStartLineNumber();
+      addNode(graph, {
+        id: `external:${provider.slug}`,
+        kind: "external",
+        label: `${provider.label} API`,
+        file,
+        line,
+        meta: { client: provider.slug }
+      });
+      graph.externalAccesses.push({ nodeId: `external:${provider.slug}`, file, line });
     }
   }
 
@@ -443,6 +459,171 @@ function extractProviderSurface(cwd: string, sourceFile: SourceFile, graph: Muta
       graph.envAccesses.push({ nodeId: `env:${envName}`, file, line });
     }
   }
+}
+
+type ProviderInfo = { slug: string; label: string };
+
+type ExternalImports = {
+  httpClients: Set<string>;
+  sdkProviders: Map<string, ProviderInfo>;
+};
+
+type ExternalCall = {
+  nodeId: string;
+  label: string;
+  client: string;
+  url?: string;
+};
+
+// Read a file's imports to learn which local identifiers are HTTP clients (axios/got/ky/…)
+// or provider SDKs (stripe/openai/octokit/…). This keeps detection precise: we only treat a
+// `.get()`/`.post()` as an external call when the receiver was actually imported as a client.
+function collectExternalImports(sourceFile: SourceFile): ExternalImports {
+  const httpClients = new Set<string>();
+  const sdkProviders = new Map<string, ProviderInfo>();
+
+  for (const declaration of sourceFile.getImportDeclarations()) {
+    const moduleName = declaration.getModuleSpecifierValue();
+    const localNames = importedLocalNames(declaration);
+
+    if (httpClientModules.has(moduleName)) {
+      for (const name of localNames) {
+        httpClients.add(name);
+      }
+      continue;
+    }
+
+    const provider = sdkModuleProvider(moduleName);
+
+    if (provider) {
+      for (const name of localNames) {
+        sdkProviders.set(name, provider);
+      }
+    }
+  }
+
+  return { httpClients, sdkProviders };
+}
+
+function importedLocalNames(declaration: ImportDeclaration): string[] {
+  const names: string[] = [];
+  const defaultImport = declaration.getDefaultImport();
+  const namespaceImport = declaration.getNamespaceImport();
+
+  if (defaultImport) {
+    names.push(defaultImport.getText());
+  }
+
+  if (namespaceImport) {
+    names.push(namespaceImport.getText());
+  }
+
+  for (const named of declaration.getNamedImports()) {
+    names.push((named.getAliasNode() ?? named.getNameNode()).getText());
+  }
+
+  return names;
+}
+
+// `const stripe = new Stripe(...)` makes `stripe` an instance of a provider SDK, so later
+// `stripe.charges.create(...)` calls count as external calls to that provider.
+function collectSdkInstances(sourceFile: SourceFile, imports: ExternalImports): Map<string, ProviderInfo> {
+  const instances = new Map<string, ProviderInfo>();
+
+  for (const variable of sourceFile.getVariableDeclarations()) {
+    const initializer = variable.getInitializerIfKind(SyntaxKind.NewExpression);
+
+    if (!initializer) {
+      continue;
+    }
+
+    const provider = sdkProviderForIdentifier(rootIdentifierName(initializer.getExpression()), imports);
+
+    if (provider) {
+      instances.set(variable.getName(), provider);
+    }
+  }
+
+  return instances;
+}
+
+function identifyExternalCall(
+  call: CallExpression,
+  imports: ExternalImports,
+  sdkInstances: Map<string, ProviderInfo>
+): ExternalCall | undefined {
+  const expression = call.getExpression();
+
+  if (Node.isIdentifier(expression)) {
+    const name = expression.getText();
+
+    if (name === "fetch" || imports.httpClients.has(name)) {
+      return httpExternalCall(call, name);
+    }
+
+    const provider = imports.sdkProviders.get(name);
+    if (provider) {
+      return sdkExternalCall(provider);
+    }
+
+    return undefined;
+  }
+
+  if (Node.isPropertyAccessExpression(expression)) {
+    const root = rootIdentifierName(expression);
+    const method = expression.getName();
+
+    if (imports.httpClients.has(root) && httpRequestMethods.has(method)) {
+      return httpExternalCall(call, root);
+    }
+
+    const provider = sdkInstances.get(root) ?? imports.sdkProviders.get(root);
+    if (provider) {
+      return sdkExternalCall(provider);
+    }
+  }
+
+  return undefined;
+}
+
+function httpExternalCall(call: CallExpression, client: string): ExternalCall {
+  const urlArgument = call.getArguments().find((argument) => getStringLiteralValue(argument) !== undefined);
+  const url = urlArgument ? getStringLiteralValue(urlArgument) : undefined;
+  const host = url ? safeHost(url) : undefined;
+
+  if (host && url) {
+    return { nodeId: `external:${host}`, label: `${host} API`, client, url };
+  }
+
+  return { nodeId: "external:http", label: "External HTTP call", client };
+}
+
+function sdkExternalCall(provider: ProviderInfo): ExternalCall {
+  return { nodeId: `external:${provider.slug}`, label: `${provider.label} API`, client: provider.slug };
+}
+
+function sdkProviderForIdentifier(name: string, imports: ExternalImports): ProviderInfo | undefined {
+  return imports.sdkProviders.get(name);
+}
+
+function rootIdentifierName(node: TsMorphNode): string {
+  let current: TsMorphNode | undefined = node;
+
+  while (current && Node.isPropertyAccessExpression(current)) {
+    current = current.getExpression();
+  }
+
+  return current && Node.isIdentifier(current) ? current.getText() : "";
+}
+
+function sdkModuleProvider(moduleName: string): ProviderInfo | undefined {
+  for (const provider of sdkModuleProviders) {
+    if (provider.test(moduleName)) {
+      return { slug: provider.slug, label: provider.label };
+    }
+  }
+
+  return undefined;
 }
 
 function extractDatabaseSurface(cwd: string, sourceFile: SourceFile, graph: MutableGraph): void {
@@ -479,55 +660,62 @@ function extractDatabaseSurface(cwd: string, sourceFile: SourceFile, graph: Muta
   }
 }
 
+// Companion safeguards (audit logs, redactors, permission contracts) are detected by the
+// *role* their symbol name implies rather than by hardcoded demo identifiers, so a repo's
+// own `auditLogger` / `sanitizeInput` / `requireScope` const is recognized as protection
+// instead of being reported as a missing companion.
 function extractCompanionSurface(cwd: string, sourceFile: SourceFile, graph: MutableGraph): void {
   const file = relativePath(cwd, sourceFile);
 
   for (const variable of sourceFile.getVariableDeclarations()) {
     const name = variable.getName();
-    const lowerName = name.toLowerCase();
+    const role = companionRoleForName(name);
 
-    if (name === "toolAuditLog" || lowerName.includes("toolauditlog")) {
-      addNode(graph, {
-        id: "service:tool_audit_log",
-        kind: "service",
-        label: "Tool audit log",
-        file,
-        line: variable.getStartLineNumber(),
-        meta: {
-          symbol: name,
-          records: "external tool calls"
-        }
-      });
+    if (!role) {
+      continue;
     }
 
-    if (name === "secretRedactor" || lowerName.includes("secretredactor")) {
-      addNode(graph, {
-        id: "service:secret_redactor",
-        kind: "service",
-        label: "Secret redactor",
-        file,
-        line: variable.getStartLineNumber(),
-        meta: {
-          symbol: name,
-          scope: "tool inputs and provider responses"
-        }
-      });
-    }
+    const line = variable.getStartLineNumber();
 
-    if (name === "issueToolPermissionScope" || name === "createIssuePermissionScope") {
+    if (role === "permission") {
       addNode(graph, {
-        id: "contract:issue_tool_permission_scope",
+        id: `contract:${slugId(name)}`,
         kind: "contract",
-        label: "Per-session permission scope",
+        label: humanizeId(name),
         file,
-        line: variable.getStartLineNumber(),
-        meta: {
-          symbol: name,
-          rule: "external issue creation requires scoped approval"
-        }
+        line,
+        meta: { symbol: name, role: "permission" }
       });
+      continue;
     }
+
+    addNode(graph, {
+      id: `service:${slugId(name)}`,
+      kind: "service",
+      label: humanizeId(name),
+      file,
+      line,
+      meta: { symbol: name, role }
+    });
   }
+}
+
+type CompanionRole = "audit" | "redaction" | "permission";
+
+function companionRoleForName(name: string): CompanionRole | undefined {
+  if (/audit/i.test(name)) {
+    return "audit";
+  }
+
+  if (/redact|sanitize|scrub|mask/i.test(name)) {
+    return "redaction";
+  }
+
+  if (/permission|authoriz|\bscope|guard/i.test(name)) {
+    return "permission";
+  }
+
+  return undefined;
 }
 
 function extractTestSurface(cwd: string, sourceFile: SourceFile, graph: MutableGraph): void {
@@ -876,18 +1064,23 @@ function isAccessInActorRange(actor: GraphNode, access: GraphAccess): boolean {
 }
 
 function attachMissingCompanionWarnings(graph: MutableGraph): void {
-  const toolNodes = [...graph.nodes.values()].filter((node) => node.kind === "tool");
+  // Any actor that reaches an external system needs the same safeguards, whether it is an
+  // agent tool or an HTTP route handler. Routes that call a provider with a secret were
+  // previously invisible to the warning engine.
+  const actors = [...graph.nodes.values()].filter(
+    (node) => node.kind === "tool" || node.kind === "endpoint"
+  );
 
-  for (const tool of toolNodes) {
+  for (const actor of actors) {
     const externalCall = [...graph.edges.values()].find(
-      (edge) => edge.from === tool.id && edge.to.startsWith("external:") && edge.kind === "calls"
+      (edge) => edge.from === actor.id && edge.to.startsWith("external:") && edge.kind === "calls"
     );
 
     if (!externalCall) {
       continue;
     }
 
-    for (const warning of missingCompanionWarningsForTool(graph, tool, externalCall.to)) {
+    for (const warning of missingCompanionWarningsForActor(graph, actor, externalCall.to)) {
       graph.warnings.push(warning);
       addNode(graph, {
         id: warning.id,
@@ -898,28 +1091,36 @@ function attachMissingCompanionWarnings(graph: MutableGraph): void {
           evidence: warning.evidence
         }
       });
-      addEdge(graph, `edge:${warning.id}:missing`, tool.id, warning.id, "missing");
+      addEdge(graph, `edge:${warning.id}:missing`, actor.id, warning.id, "missing");
     }
   }
 }
 
-function missingCompanionWarningsForTool(
+function actorSlug(actor: GraphNode): string {
+  return slugId(actor.id.replace(/^(tool|endpoint|service):/, ""));
+}
+
+function missingCompanionWarningsForActor(
   graph: MutableGraph,
-  tool: GraphNode,
+  actor: GraphNode,
   externalNodeId: string
 ): SnitchWarning[] {
-  const toolSlug = tool.id.replace(/^tool:/, "");
-  const canonicalWarnings = tool.id === "tool:create_issue"
+  const slug = actorSlug(actor);
+  const canonicalWarnings = actor.id === "tool:create_issue"
     ? createIssueWarnings(externalNodeId)
-    : createGenericToolWarnings(tool, externalNodeId);
+    : createGenericToolWarnings(actor, externalNodeId);
   const warningSatisfied = new Map<string, boolean>([
-    [`warning:tool_audit_log_missing:${toolSlug}`, graph.nodes.has("service:tool_audit_log")],
-    [`warning:secret_redaction_missing:${toolSlug}`, graph.nodes.has("service:secret_redactor")],
-    [`warning:permission_scope_missing:${toolSlug}`, hasPermissionScopeForTool(graph, toolSlug)],
-    [`warning:unauthorized_test_missing:${toolSlug}`, hasUnauthorizedTestForTool(graph, toolSlug)]
+    [`warning:tool_audit_log_missing:${slug}`, hasCompanionRole(graph, "audit")],
+    [`warning:secret_redaction_missing:${slug}`, hasCompanionRole(graph, "redaction")],
+    [`warning:permission_scope_missing:${slug}`, hasPermissionScopeForTool(graph, slug)],
+    [`warning:unauthorized_test_missing:${slug}`, hasUnauthorizedTestForTool(graph, slug)]
   ]);
 
   return canonicalWarnings.filter((warning) => !warningSatisfied.get(warning.id));
+}
+
+function hasCompanionRole(graph: MutableGraph, role: CompanionRole): boolean {
+  return [...graph.nodes.values()].some((node) => node.meta?.role === role);
 }
 
 function createIssueWarnings(externalNodeId: string): SnitchWarning[] {
@@ -937,7 +1138,7 @@ function createIssueWarnings(externalNodeId: string): SnitchWarning[] {
 }
 
 function createGenericToolWarnings(tool: GraphNode, externalNodeId: string): SnitchWarning[] {
-  const toolSlug = tool.id.replace(/^tool:/, "");
+  const toolSlug = actorSlug(tool);
   const toolLabelText = tool.label;
 
   return [
@@ -999,8 +1200,10 @@ function hasPermissionScopeForTool(graph: MutableGraph, toolSlug: string): boole
 
   return [...graph.nodes.values()].some(
     (node) =>
-      node.kind === "contract" &&
-      (node.id.includes(toolSlug) || String(node.meta?.symbol ?? "").toLowerCase().includes(toolSlug))
+      (node.kind === "contract" || node.meta?.role === "permission") &&
+      (node.meta?.role === "permission" ||
+        node.id.includes(toolSlug) ||
+        String(node.meta?.symbol ?? "").toLowerCase().includes(toolSlug))
   );
 }
 
@@ -1181,6 +1384,39 @@ const databaseMethods = new Set([...readDatabaseMethods, ...writeDatabaseMethods
 const httpMethods = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
 const toolFactoryNames = new Set(["tool", "createTool", "defineTool"]);
 const toolRegistrationMethods = new Set(["tool", "registerTool"]);
+
+// HTTP client libraries whose calls (`axios.post(...)`, `got(...)`, `ky.get(...)`) reach an
+// external system just like `fetch` does.
+const httpClientModules = new Set([
+  "axios",
+  "got",
+  "ky",
+  "node-fetch",
+  "undici",
+  "superagent",
+  "phin",
+  "needle",
+  "redaxios"
+]);
+const httpRequestMethods = new Set(["get", "post", "put", "patch", "delete", "head", "options", "request"]);
+
+// Provider SDKs that imply an external capability when imported and constructed/used.
+const sdkModuleProviders: Array<{ test: (moduleName: string) => boolean; slug: string; label: string }> = [
+  { test: (moduleName) => moduleName === "stripe", slug: "stripe", label: "Stripe" },
+  { test: (moduleName) => moduleName === "openai", slug: "openai", label: "OpenAI" },
+  { test: (moduleName) => moduleName === "@anthropic-ai/sdk", slug: "anthropic", label: "Anthropic" },
+  { test: (moduleName) => moduleName === "octokit" || moduleName.startsWith("@octokit/"), slug: "github", label: "GitHub" },
+  { test: (moduleName) => moduleName === "twilio", slug: "twilio", label: "Twilio" },
+  { test: (moduleName) => moduleName === "@sendgrid/mail", slug: "sendgrid", label: "SendGrid" },
+  { test: (moduleName) => moduleName === "resend", slug: "resend", label: "Resend" },
+  { test: (moduleName) => moduleName === "aws-sdk" || moduleName.startsWith("@aws-sdk/"), slug: "aws", label: "AWS" },
+  { test: (moduleName) => moduleName === "cohere-ai", slug: "cohere", label: "Cohere" },
+  { test: (moduleName) => moduleName === "replicate", slug: "replicate", label: "Replicate" },
+  { test: (moduleName) => moduleName === "@slack/web-api", slug: "slack", label: "Slack" },
+  { test: (moduleName) => moduleName === "@notionhq/client", slug: "notion", label: "Notion" },
+  { test: (moduleName) => moduleName === "@linear/sdk", slug: "linear", label: "Linear" },
+  { test: (moduleName) => moduleName.startsWith("@google-cloud/"), slug: "gcp", label: "Google Cloud" }
+];
 
 function routePathFromFile(file: string): string | undefined {
   const normalized = file.replaceAll("\\", "/");

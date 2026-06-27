@@ -382,6 +382,135 @@ describe("extractTypeScriptGraph", () => {
     );
   });
 
+  it("detects external calls through axios and provider SDKs, not just fetch", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "snitch-http-clients-"));
+    tempDirs.push(tempRoot);
+    await mkdir(join(tempRoot, "src"), { recursive: true });
+    await writeFile(
+      join(tempRoot, "src/charge.ts"),
+      [
+        "import axios from \"axios\";",
+        "export const chargeTool = {",
+        "  name: \"charge_card\",",
+        "  async execute(input: unknown) {",
+        "    return axios.post(\"https://api.stripe.com/v1/charges\", input, {",
+        "      headers: { authorization: `Bearer ${process.env.STRIPE_SECRET_KEY}` }",
+        "    });",
+        "  }",
+        "};",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+    await writeFile(
+      join(tempRoot, "src/refund.ts"),
+      [
+        "import Stripe from \"stripe\";",
+        "const stripe = new Stripe(process.env.STRIPE_SECRET_KEY ?? \"\");",
+        "export const refundTool = {",
+        "  name: \"refund\",",
+        "  async execute(input: unknown) {",
+        "    return stripe.refunds.create(input as never);",
+        "  }",
+        "};",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const result = extractTypeScriptGraph({ cwd: tempRoot });
+    const nodeIds = result.snapshot.graph.nodes.map((node) => node.id);
+    const warningIds = result.snapshot.warnings.map((warning) => warning.id);
+
+    expect(nodeIds).toEqual(expect.arrayContaining(["external:api.stripe.com", "external:stripe"]));
+    // The axios + Stripe-SDK calls are external capabilities, so the warning engine must fire
+    // even though neither uses fetch.
+    expect(warningIds).toEqual(
+      expect.arrayContaining([
+        "warning:tool_audit_log_missing:charge_card",
+        "warning:secret_redaction_missing:charge_card",
+        "warning:tool_audit_log_missing:refund"
+      ])
+    );
+  });
+
+  it("suppresses companion warnings when role-named safeguards exist", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "snitch-companion-roles-"));
+    tempDirs.push(tempRoot);
+    await mkdir(join(tempRoot, "src"), { recursive: true });
+    await writeFile(
+      join(tempRoot, "src/safeguards.ts"),
+      [
+        "export const auditLogger = { write(entry: unknown) { return entry; } };",
+        "export const sanitizePayload = (value: unknown) => value;",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+    await writeFile(
+      join(tempRoot, "src/notify.ts"),
+      [
+        "import { auditLogger } from \"./safeguards\";",
+        "import { sanitizePayload } from \"./safeguards\";",
+        "export const notifyTool = {",
+        "  name: \"notify\",",
+        "  async execute(input: unknown) {",
+        "    auditLogger.write({ tool: \"notify\" });",
+        "    return fetch(\"https://hooks.slack.com/services/x\", { body: JSON.stringify(sanitizePayload(input)) });",
+        "  }",
+        "};",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const result = extractTypeScriptGraph({ cwd: tempRoot });
+    const warningIds = result.snapshot.warnings.map((warning) => warning.id);
+
+    // A real audit logger + redactor are present, so those companions must NOT be flagged.
+    expect(warningIds).not.toContain("warning:tool_audit_log_missing:notify");
+    expect(warningIds).not.toContain("warning:secret_redaction_missing:notify");
+    // Permission scope and an unauthorized-call test are still genuinely missing.
+    expect(warningIds).toEqual(
+      expect.arrayContaining([
+        "warning:permission_scope_missing:notify",
+        "warning:unauthorized_test_missing:notify"
+      ])
+    );
+  });
+
+  it("warns on route handlers that call an external system, not only agent tools", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "snitch-route-warning-"));
+    tempDirs.push(tempRoot);
+    await mkdir(join(tempRoot, "app/api/charge"), { recursive: true });
+    await writeFile(
+      join(tempRoot, "app/api/charge/route.ts"),
+      [
+        "export async function POST(request: Request) {",
+        "  const body = await request.json();",
+        "  await fetch(\"https://api.stripe.com/v1/charges\", {",
+        "    method: \"POST\",",
+        "    headers: { authorization: `Bearer ${process.env.STRIPE_SECRET_KEY}` },",
+        "    body: JSON.stringify(body)",
+        "  });",
+        "  return Response.json({ ok: true });",
+        "}",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const result = extractTypeScriptGraph({ cwd: tempRoot });
+    const warningIds = result.snapshot.warnings.map((warning) => warning.id);
+
+    expect(warningIds).toEqual(
+      expect.arrayContaining([
+        "warning:tool_audit_log_missing:post_api_charge",
+        "warning:secret_redaction_missing:post_api_charge"
+      ])
+    );
+  });
+
   it("extracts database reads and writes from common TypeScript data clients", async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), "snitch-database-extractor-"));
     tempDirs.push(tempRoot);

@@ -1462,8 +1462,9 @@ describe("snitch cli", () => {
     expect(result.insights).toEqual({
       refreshed: true
     });
-    expect(state.graph.nodes.some((node) => node.id === "service:tool_audit_log")).toBe(true);
-    expect(state.graph.nodes.some((node) => node.label === "Tool audit log")).toBe(true);
+    expect(
+      state.graph.nodes.some((node) => node.id === "service:tool_audit_log" && node.meta?.role === "audit")
+    ).toBe(true);
     expect(state.insights).toMatchObject({
       generatedAt: "2026-06-27T12:04:00.000Z",
       cerebras: {
