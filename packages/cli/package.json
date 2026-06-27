@@ -3,18 +3,31 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "snitch": "./dist/main.js"
+  },
+  "main": "./dist/main.js",
+  "files": [
+    "dist"
+  ],
   "scripts": {
-    "build": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "build": "node build.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "@snitch/events": "workspace:*",
-    "@snitch/extractor-ts": "workspace:*"
+    "@snitch/extractor-ts": "workspace:*",
+    "@snitch/graph": "workspace:*",
+    "ts-morph": "^28.0.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.7",
+    "esbuild": "^0.25.0",
     "typescript": "^5.8.3",
     "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }
