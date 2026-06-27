@@ -11,9 +11,11 @@ import { extractTypeScriptGraph } from "@snitch/extractor-ts";
 import {
   buildSnitchFindings,
   buildSnitchArtifacts,
+  createCerebrasDiagramInput,
   createCerebrasNarrationInput,
   createCerebrasWarningTriageInput,
   createStaticNarration,
+  diagramWithCerebras,
   diffGraph,
   getDemoReplay,
   getReviewSnapshot,
@@ -150,6 +152,8 @@ type LiveState = {
   graph: SnitchGraph;
   warnings: SnitchWarning[];
   events: SnitchEvent[];
+  changed?: SnitchChangedPayload;
+  diagram?: DiagramArtifact;
   artifacts: {
     findings: string;
     briefing: string;
@@ -163,6 +167,15 @@ type LiveState = {
   insights?: InsightArtifact;
   memory?: MemoryArtifact;
 };
+
+type LiveChangedPayloadCacheEntry = {
+  checkedAtMs: number;
+  payload: SnitchChangedPayload;
+};
+
+const DEFAULT_LIVE_CHANGED_CACHE_MS = 2_000;
+const MAX_LIVE_CHANGED_CACHE_ENTRIES = 64;
+const liveChangedPayloadCache = new Map<string, LiveChangedPayloadCacheEntry>();
 
 type SnitchStatusPayload = {
   ok: true;
@@ -303,6 +316,9 @@ type SnitchChangedPayload = {
   target: string;
   git: {
     available: boolean;
+    baseRef?: string;
+    mergeBase?: string;
+    diffMode?: "base" | "worktree";
     error?: string;
   };
   changedFiles: ChangedFile[];
@@ -484,9 +500,19 @@ type InsightArtifact = {
   rankedWarnings: RankedWarning[];
 };
 
+type DiagramArtifact = {
+  generatedAt: string;
+  source: "cerebras";
+  status: IntegrationStatus;
+  summary: string;
+  model?: string;
+  graph: SnitchGraph;
+};
+
 type InsightOptions = {
   offline: boolean;
   now: Date;
+  baseRef?: string;
 };
 
 type LiveServerOptions = {
@@ -496,6 +522,7 @@ type LiveServerOptions = {
   scanIntervalMs: number;
   refreshInsights: boolean;
   target?: string;
+  baseRef?: string;
 };
 
 type WatchRefreshResult = {
@@ -716,6 +743,7 @@ export async function runCli(args: string[], options: RunCliOptions = {}): Promi
       const fileWatch = !parsed.flags.has("no-files");
       const scanIntervalMs = parseScanInterval(parsed.flags.get("scan-interval"));
       const refreshInsights = fileWatch && parsed.flags.has("insights");
+      const baseFlag = parsed.flags.get("base");
       const liveOptions: LiveServerOptions = {
         port,
         intervalMs,
@@ -728,6 +756,10 @@ export async function runCli(args: string[], options: RunCliOptions = {}): Promi
         liveOptions.target = target;
       }
 
+      if (typeof baseFlag === "string" && baseFlag.trim()) {
+        liveOptions.baseRef = baseFlag;
+      }
+
       const url = await startLiveServer(cwd, liveOptions);
       return ok(
         [
@@ -736,6 +768,7 @@ export async function runCli(args: string[], options: RunCliOptions = {}): Promi
           "- State: /api/state",
           "- Events: GET /api/events",
           "- Hook ingest: POST /api/events?source=<agent>&hook=<hook>",
+          ...(liveOptions.baseRef ? [`- Changed base: ${liveOptions.baseRef}`] : []),
           `- File watcher: ${fileWatch ? `enabled (${scanIntervalMs}ms)` : "disabled"}`,
           `- Insight refresh: ${refreshInsights ? "enabled" : "disabled"}`
         ].join("\n") + "\n"
@@ -746,7 +779,8 @@ export async function runCli(args: string[], options: RunCliOptions = {}): Promi
       return ok(
         await writeInsightArtifacts(cwd, {
           offline: parsed.flags.has("offline"),
-          now
+          now,
+          ...(typeof parsed.flags.get("base") === "string" ? { baseRef: parsed.flags.get("base") as string } : {})
         })
       );
     }
@@ -2625,7 +2659,7 @@ async function readSnitchChangedPayload(
     cwd,
     targetFlag && targetFlag !== true ? targetFlag : session.analysisTarget
   );
-  const gitChanged = await readGitChangedFiles(cwd);
+  const gitChanged = await readGitChangedFiles(cwd, resolveChangedBaseRef(flags));
   const changedFiles = gitChanged.files.map((file) => withTargetPath(cwd, target, file));
   const warnings = await readWarnings(cwd, graph);
   const findings = buildSnitchFindings(graph, warnings);
@@ -2641,6 +2675,9 @@ async function readSnitchChangedPayload(
     target: storeTargetPath(cwd, target),
     git: {
       available: gitChanged.available,
+      ...(gitChanged.baseRef ? { baseRef: gitChanged.baseRef } : {}),
+      ...(gitChanged.mergeBase ? { mergeBase: gitChanged.mergeBase } : {}),
+      ...(gitChanged.diffMode ? { diffMode: gitChanged.diffMode } : {}),
       ...(gitChanged.error ? { error: gitChanged.error } : {})
     },
     changedFiles,
@@ -2670,7 +2707,7 @@ function formatSnitchChanged(payload: SnitchChangedPayload): string {
 
   return [
     "Snitch changed review",
-    `- Git: ${payload.git.available ? "available" : `unavailable${payload.git.error ? ` (${payload.git.error})` : ""}`}`,
+    `- Git: ${payload.git.available ? formatChangedGitStatus(payload.git) : `unavailable${payload.git.error ? ` (${payload.git.error})` : ""}`}`,
     `- Target: ${payload.target}`,
     `- Changed files: ${payload.counts.changedFiles}`,
     `- Changed files in target: ${payload.counts.targetChangedFiles}`,
@@ -2685,6 +2722,14 @@ function formatSnitchChanged(payload: SnitchChangedPayload): string {
     "Next commands:",
     ...payload.nextCommands.map((command) => `- ${command}`)
   ].join("\n") + "\n";
+}
+
+function formatChangedGitStatus(git: SnitchChangedPayload["git"]): string {
+  if (git.baseRef) {
+    return `available, diffing against ${git.baseRef}`;
+  }
+
+  return "available, worktree only";
 }
 
 function createChangedNextCommands(
@@ -2804,7 +2849,29 @@ function createIntentNextCommands(
   return unique(commands);
 }
 
-async function readGitChangedFiles(cwd: string): Promise<{ available: boolean; files: ChangedFile[]; error?: string }> {
+function resolveChangedBaseRef(flags: ParsedArgs["flags"]): string | undefined {
+  const flag = flags.get("base");
+
+  if (typeof flag === "string" && flag.trim()) {
+    return flag;
+  }
+
+  const envBase = process.env.SNITCH_BASE_REF || process.env.GITHUB_BASE_REF;
+
+  return envBase?.trim() || undefined;
+}
+
+async function readGitChangedFiles(
+  cwd: string,
+  baseRef?: string
+): Promise<{
+  available: boolean;
+  files: ChangedFile[];
+  baseRef?: string;
+  mergeBase?: string;
+  diffMode?: "base" | "worktree";
+  error?: string;
+}> {
   const args = ["-C", cwd, "status", "--porcelain=v1", "--untracked-files=all"];
 
   try {
@@ -2812,18 +2879,73 @@ async function readGitChangedFiles(cwd: string): Promise<{ available: boolean; f
       env: withoutGitLocalEnv(),
       maxBuffer: 1024 * 1024
     });
+    const worktreeFiles = parseGitPorcelain(stdout).filter(isUserChangedFile);
 
-    return {
-      available: true,
-      files: parseGitPorcelain(stdout)
-    };
+    if (!baseRef) {
+      return {
+        available: true,
+        files: worktreeFiles,
+        diffMode: "worktree"
+      };
+    }
+
+    try {
+      const resolvedBase = await resolveGitBaseRef(cwd, baseRef);
+      const mergeBase = await gitStdout(cwd, ["merge-base", "HEAD", resolvedBase]);
+      const diffStdout = await gitStdout(cwd, ["diff", "--name-status", mergeBase, "HEAD"]);
+
+      return {
+        available: true,
+        files: mergeChangedFiles(parseGitNameStatus(diffStdout).filter(isUserChangedFile), worktreeFiles),
+        baseRef: resolvedBase,
+        mergeBase,
+        diffMode: "base"
+      };
+    } catch (error) {
+      return {
+        available: true,
+        files: worktreeFiles,
+        diffMode: "worktree",
+        error: `Could not diff against ${baseRef}: ${errorMessage(error)}`
+      };
+    }
   } catch (error) {
     return {
       available: false,
       files: [],
+      diffMode: "worktree",
       error: errorMessage(error)
     };
   }
+}
+
+async function gitStdout(cwd: string, args: string[]): Promise<string> {
+  const { stdout } = await execFileAsync("git", ["-C", cwd, ...args], {
+    env: withoutGitLocalEnv(),
+    maxBuffer: 1024 * 1024
+  });
+
+  return stdout.trim();
+}
+
+async function resolveGitBaseRef(cwd: string, baseRef: string): Promise<string> {
+  const candidates = unique(
+    [
+      baseRef,
+      baseRef.startsWith("origin/") ? undefined : `origin/${baseRef}`
+    ].filter((candidate): candidate is string => Boolean(candidate))
+  );
+
+  for (const candidate of candidates) {
+    try {
+      await gitStdout(cwd, ["rev-parse", "--verify", `${candidate}^{commit}`]);
+      return candidate;
+    } catch {
+      // Try the next common spelling.
+    }
+  }
+
+  throw new Error(`base ref not found: ${baseRef}`);
 }
 
 function withoutGitLocalEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
@@ -2858,6 +2980,71 @@ function parseGitPorcelain(stdout: string): ChangedFile[] {
 
       return file;
     });
+}
+
+function parseGitNameStatus(stdout: string): ChangedFile[] {
+  return stdout
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      const parts = line.split("\t");
+      const status = parts[0] ?? "M";
+      const renameLike = status.startsWith("R") || status.startsWith("C");
+      const oldPath = renameLike ? normalizePath(parts[1] ?? "") : undefined;
+      const path = normalizePath(parts[renameLike ? 2 : 1] ?? "");
+      const file: ChangedFile = {
+        status: renameLike ? status.slice(0, 1) : status,
+        path,
+        inAnalysisTarget: false
+      };
+
+      if (oldPath) {
+        file.oldPath = oldPath;
+      }
+
+      return file;
+    })
+    .filter((file) => file.path);
+}
+
+function isUserChangedFile(file: ChangedFile): boolean {
+  const path = normalizePath(file.path);
+
+  return !path.startsWith(".snitch/") && !path.startsWith(".context/");
+}
+
+function mergeChangedFiles(baseFiles: ChangedFile[], worktreeFiles: ChangedFile[]): ChangedFile[] {
+  const byPath = new Map<string, ChangedFile>();
+
+  for (const file of baseFiles) {
+    byPath.set(file.path, file);
+  }
+
+  for (const file of worktreeFiles) {
+    const existing = byPath.get(file.path);
+
+    byPath.set(file.path, existing ? mergeChangedFile(existing, file) : file);
+  }
+
+  return [...byPath.values()].sort((left, right) => left.path.localeCompare(right.path));
+}
+
+function mergeChangedFile(baseFile: ChangedFile, worktreeFile: ChangedFile): ChangedFile {
+  const merged: ChangedFile = {
+    ...baseFile,
+    status: baseFile.status === "A" && worktreeFile.status === "M"
+      ? "A"
+      : worktreeFile.status === "D"
+        ? "D"
+        : baseFile.status
+  };
+  const oldPath = baseFile.oldPath ?? worktreeFile.oldPath;
+
+  if (oldPath) {
+    merged.oldPath = oldPath;
+  }
+
+  return merged;
 }
 
 function withTargetPath(cwd: string, target: string, file: ChangedFile): ChangedFile {
@@ -3352,6 +3539,10 @@ function createMcpTools(): Array<Record<string, unknown>> {
             type: "string",
             description: "Analysis target for changed-file mapping. Defaults to the stored Snitch analysis target."
           },
+          base: {
+            type: "string",
+            description: "Git base ref for the changed-file diff, for example origin/main."
+          },
           warning: {
             type: "string",
             description: "Warning id to use for the impact scope. Defaults to the top Snitch action."
@@ -3456,6 +3647,10 @@ function createMcpTools(): Array<Record<string, unknown>> {
           target: {
             type: "string",
             description: "Analysis target. Defaults to the stored Snitch analysis target."
+          },
+          base: {
+            type: "string",
+            description: "Git base ref to diff against. Defaults to SNITCH_BASE_REF, GITHUB_BASE_REF, or worktree-only status."
           }
         },
         additionalProperties: false
@@ -3696,6 +3891,10 @@ function mcpFlags(args: Record<string, unknown>): ParsedArgs["flags"] {
     flags.set("target", args.target);
   }
 
+  if (typeof args.base === "string") {
+    flags.set("base", args.base);
+  }
+
   if (typeof args.task === "string") {
     flags.set("task", args.task);
   }
@@ -3837,7 +4036,13 @@ async function startLiveServer(cwd: string, options: LiveServerOptions): Promise
 
     if (request.method === "GET" && requestUrl.pathname === "/api/state") {
       try {
-        sendJson(response, 200, await readLiveState(cwd));
+        const stateOptions: { baseRef?: string } = {};
+
+        if (options.baseRef) {
+          stateOptions.baseRef = options.baseRef;
+        }
+
+        sendJson(response, 200, await readLiveState(cwd, stateOptions));
       } catch (error) {
         sendError(response, error);
       }
@@ -3845,7 +4050,15 @@ async function startLiveServer(cwd: string, options: LiveServerOptions): Promise
     }
 
     if (request.method === "GET" && requestUrl.pathname === "/api/events") {
-      handleLiveEvents(cwd, response, options.intervalMs);
+      const eventOptions: { intervalMs: number; baseRef?: string } = {
+        intervalMs: options.intervalMs
+      };
+
+      if (options.baseRef) {
+        eventOptions.baseRef = options.baseRef;
+      }
+
+      handleLiveEvents(cwd, response, eventOptions);
       request.on("close", () => response.end());
       return;
     }
@@ -3886,6 +4099,7 @@ async function startLiveServer(cwd: string, options: LiveServerOptions): Promise
     target?: string;
     scanIntervalMs: number;
     refreshInsights: boolean;
+    baseRef?: string;
   } = {
     scanIntervalMs: options.scanIntervalMs,
     refreshInsights: options.refreshInsights
@@ -3893,6 +4107,10 @@ async function startLiveServer(cwd: string, options: LiveServerOptions): Promise
 
   if (options.target) {
     fileRefreshOptions.target = options.target;
+  }
+
+  if (options.baseRef) {
+    fileRefreshOptions.baseRef = options.baseRef;
   }
 
   const stopFileWatcher = options.fileWatch
@@ -3936,6 +4154,7 @@ function startFileRefreshLoop(
     target?: string;
     scanIntervalMs: number;
     refreshInsights: boolean;
+    baseRef?: string;
   }
 ): () => void {
   let lastFingerprint = "";
@@ -3982,6 +4201,7 @@ export async function refreshWatchedTarget(
     target?: string;
     now: Date;
     refreshInsights?: boolean;
+    baseRef?: string;
   }
 ): Promise<WatchRefreshResult> {
   await ensureInitialized(cwd, input.now);
@@ -4025,7 +4245,8 @@ export async function refreshWatchedTarget(
       try {
         await writeInsightArtifacts(cwd, {
           offline: false,
-          now: input.now
+          now: input.now,
+          ...(input.baseRef ? { baseRef: input.baseRef } : {})
         });
         result.insights = {
           refreshed: true
@@ -4057,18 +4278,27 @@ export async function refreshWatchedTarget(
   }
 }
 
-export async function readLiveState(cwd: string): Promise<LiveState> {
+export async function readLiveState(
+  cwd: string,
+  options: {
+    baseRef?: string;
+    changedCacheMs?: number;
+    now?: Date;
+  } = {}
+): Promise<LiveState> {
   const graph = JSON.parse(await readFile(resolve(cwd, ".snitch/graph.json"), "utf8")) as SnitchGraph;
   const warnings = await readWarnings(cwd, graph);
   const events = await readEvents(cwd);
   const sessionText = await readTextIfExists(cwd, ".snitch/session.json");
+  const session = sessionText ? JSON.parse(sessionText) : null;
   const insightsText = await readTextIfExists(cwd, ".snitch/insights.json");
+  const diagramText = await readTextIfExists(cwd, ".snitch/diagram.json");
   const memoryText = await readTextIfExists(cwd, ".snitch/memory.json");
   const state: LiveState = {
     ok: true,
     cwd,
     generatedAt: new Date().toISOString(),
-    session: sessionText ? JSON.parse(sessionText) : null,
+    session,
     graph,
     warnings,
     events: events.slice(-50),
@@ -4084,8 +4314,37 @@ export async function readLiveState(cwd: string): Promise<LiveState> {
     }
   };
 
+  try {
+    const nowMs = options.now?.getTime() ?? Date.now();
+    const cacheMs = options.changedCacheMs ?? DEFAULT_LIVE_CHANGED_CACHE_MS;
+    const changedOptions: {
+      baseRef?: string;
+      cacheMs: number;
+      graph: SnitchGraph;
+      nowMs: number;
+      session: unknown;
+    } = {
+      cacheMs,
+      graph,
+      nowMs,
+      session
+    };
+
+    if (options.baseRef) {
+      changedOptions.baseRef = options.baseRef;
+    }
+
+    state.changed = await readLiveChangedPayload(cwd, changedOptions);
+  } catch {
+    // Live state should keep rendering even when Git or session state is temporarily unavailable.
+  }
+
   if (insightsText) {
     state.insights = JSON.parse(insightsText) as InsightArtifact;
+  }
+
+  if (diagramText) {
+    state.diagram = JSON.parse(diagramText) as DiagramArtifact;
   }
 
   if (memoryText) {
@@ -4095,7 +4354,75 @@ export async function readLiveState(cwd: string): Promise<LiveState> {
   return state;
 }
 
-function handleLiveEvents(cwd: string, response: ServerResponse, intervalMs: number): void {
+async function readLiveChangedPayload(
+  cwd: string,
+  options: {
+    baseRef?: string;
+    cacheMs: number;
+    graph: SnitchGraph;
+    nowMs: number;
+    session: unknown;
+  }
+): Promise<SnitchChangedPayload> {
+  const changedFlags = new Map<string, string | true>();
+
+  if (options.baseRef) {
+    changedFlags.set("base", options.baseRef);
+  }
+
+  const resolvedBaseRef = resolveChangedBaseRef(changedFlags) ?? "";
+  const cacheKey = hashJson({
+    baseRef: resolvedBaseRef,
+    cwd,
+    graphId: options.graph.id,
+    target: liveSessionAnalysisTarget(options.session)
+  });
+
+  if (options.cacheMs > 0) {
+    const cached = liveChangedPayloadCache.get(cacheKey);
+
+    if (cached && options.nowMs - cached.checkedAtMs < options.cacheMs) {
+      return cached.payload;
+    }
+  }
+
+  const payload = await readSnitchChangedPayload(cwd, changedFlags);
+
+  if (options.cacheMs > 0) {
+    liveChangedPayloadCache.set(cacheKey, {
+      checkedAtMs: options.nowMs,
+      payload
+    });
+    pruneLiveChangedPayloadCache();
+  }
+
+  return payload;
+}
+
+function liveSessionAnalysisTarget(session: unknown): string {
+  return isRecord(session) && typeof session.analysisTarget === "string" ? session.analysisTarget : "";
+}
+
+function pruneLiveChangedPayloadCache(): void {
+  if (liveChangedPayloadCache.size <= MAX_LIVE_CHANGED_CACHE_ENTRIES) {
+    return;
+  }
+
+  const oldestKey = liveChangedPayloadCache.keys().next().value;
+
+  if (typeof oldestKey === "string") {
+    liveChangedPayloadCache.delete(oldestKey);
+  }
+}
+
+function handleLiveEvents(
+  cwd: string,
+  response: ServerResponse,
+  options: {
+    intervalMs: number;
+    baseRef?: string;
+  }
+): void {
   writeCorsHeaders(response);
   response.writeHead(200, {
     "Content-Type": "text/event-stream",
@@ -4112,7 +4439,13 @@ function handleLiveEvents(cwd: string, response: ServerResponse, intervalMs: num
     }
 
     try {
-      const state = await readLiveState(cwd);
+      const stateOptions: { baseRef?: string } = {};
+
+      if (options.baseRef) {
+        stateOptions.baseRef = options.baseRef;
+      }
+
+      const state = await readLiveState(cwd, stateOptions);
       const stateHash = hashLiveState(state);
 
       if (stateHash !== lastHash) {
@@ -4126,7 +4459,7 @@ function handleLiveEvents(cwd: string, response: ServerResponse, intervalMs: num
   }
 
   void sendIfChanged();
-  const interval = setInterval(() => void sendIfChanged(), intervalMs);
+  const interval = setInterval(() => void sendIfChanged(), options.intervalMs);
 
   response.on("close", () => {
     closed = true;
@@ -4171,20 +4504,61 @@ async function writeInsightArtifacts(cwd: string, options: InsightOptions): Prom
     warnings,
     repoRules: backboard.rules
   });
+  const changedFlags = new Map<string, string | true>();
+
+  if (options.baseRef) {
+    changedFlags.set("base", options.baseRef);
+  }
+
+  const changedPayload = await readSnitchChangedPayload(cwd, changedFlags).catch(() => undefined);
+  const diagramChangedFiles = changedPayload?.changedFiles.map((file) => ({
+    path: file.path,
+    status: file.status,
+    ...(file.targetPath ? { targetPath: file.targetPath } : {})
+  }));
+  const diagramChangedPaths = diagramChangedFiles?.flatMap((file) =>
+    [file.targetPath, file.path].filter((path): path is string => Boolean(path))
+  ) ?? [];
+  const diagramGraph = diagramChangedPaths.length > 0
+    ? scopeGraph(graph, diffGraph(graph, graph), "changed", undefined, diagramChangedPaths)
+    : graph;
+  const diagramWarningIds = new Set(
+    diagramGraph.nodes.filter((node) => node.kind === "warning").map((node) => node.id)
+  );
+  const diagramWarnings = warnings.filter((warning) => diagramWarningIds.has(warning.id));
+  const diagramInputOptions: Parameters<typeof createCerebrasDiagramInput>[0] = {
+    task,
+    graph: diagramGraph,
+    warnings: diagramWarnings,
+    repoRules: backboard.rules
+  };
+
+  if (diagramChangedFiles) {
+    diagramInputOptions.changedFiles = diagramChangedFiles;
+  }
+
+  const diagramInput = createCerebrasDiagramInput(diagramInputOptions);
   const cerebrasInput: Parameters<typeof narrateWithCerebras>[0] = {
     model: env.CEREBRAS_MODEL || "gpt-oss-120b",
     input: narrationInput
   };
+  const diagramCerebrasInput: Parameters<typeof diagramWithCerebras>[0] = {
+    model: env.CEREBRAS_MODEL || "gpt-oss-120b",
+    input: diagramInput,
+    graph: diagramGraph,
+    warnings: diagramWarnings
+  };
 
   if (env.CEREBRAS_API_KEY) {
     cerebrasInput.apiKey = env.CEREBRAS_API_KEY;
+    diagramCerebrasInput.apiKey = env.CEREBRAS_API_KEY;
   }
 
   if (fetcher) {
     cerebrasInput.fetcher = fetcher;
+    diagramCerebrasInput.fetcher = fetcher;
   }
 
-  const cerebras = await narrateWithCerebras(cerebrasInput);
   const triageInput = createCerebrasWarningTriageInput({
     task,
     warnings,
@@ -4204,7 +4578,11 @@ async function writeInsightArtifacts(cwd: string, options: InsightOptions): Prom
     warningTriageInput.fetcher = fetcher;
   }
 
-  const warningTriage = await rankWarningsWithCerebras(warningTriageInput);
+  const [cerebras, warningTriage, diagram] = await Promise.all([
+    narrateWithCerebras(cerebrasInput),
+    rankWarningsWithCerebras(warningTriageInput),
+    diagramWithCerebras(diagramCerebrasInput)
+  ]);
   const artifact: InsightArtifact = {
     generatedAt: options.now.toISOString(),
     narration:
@@ -4226,16 +4604,33 @@ async function writeInsightArtifacts(cwd: string, options: InsightOptions): Prom
     artifact.cerebras.model = cerebras.model;
   } else if (warningTriage.model) {
     artifact.cerebras.model = warningTriage.model;
+  } else if (diagram.model) {
+    artifact.cerebras.model = diagram.model;
   }
 
   await writeJson(cwd, ".snitch/insights.json", artifact);
+  const diagramArtifact: DiagramArtifact = {
+    generatedAt: options.now.toISOString(),
+    source: "cerebras",
+    status: diagram.status,
+    summary: diagram.summary,
+    graph: diagram.graph
+  };
+
+  if (diagram.model) {
+    diagramArtifact.model = diagram.model;
+  }
+
+  await writeJson(cwd, ".snitch/diagram.json", diagramArtifact);
 
   return [
     "Snitch insights artifact written.",
     `- Cerebras: ${artifact.cerebras.status} narration / ${artifact.cerebras.triageStatus} triage${artifact.cerebras.model ? ` (${artifact.cerebras.model})` : ""}`,
+    `- Diagram: ${diagramArtifact.status} / ${diagramArtifact.graph.nodes.length} nodes`,
     `- Backboard: ${artifact.backboard.status} / ${artifact.backboard.rules.length} rules`,
     `- Ranked warnings: ${artifact.rankedWarnings.length}`,
-    "- Updated: .snitch/insights.json"
+    "- Updated: .snitch/insights.json",
+    "- Updated: .snitch/diagram.json"
   ].join("\n") + "\n";
 }
 
@@ -4799,10 +5194,29 @@ function hashLiveState(state: LiveState): string {
     graph: state.graph,
     warnings: state.warnings,
     events: state.events,
+    changed: stableChangedPayloadForHash(state.changed),
+    diagram: state.diagram,
     insights: state.insights,
     memory: state.memory,
     artifacts: state.artifacts
   });
+}
+
+function stableChangedPayloadForHash(payload: SnitchChangedPayload | undefined): unknown {
+  if (!payload) {
+    return undefined;
+  }
+
+  return {
+    ok: payload.ok,
+    cwd: payload.cwd,
+    target: payload.target,
+    git: payload.git,
+    changedFiles: payload.changedFiles,
+    changedFindings: payload.changedFindings,
+    counts: payload.counts,
+    nextCommands: payload.nextCommands
+  };
 }
 
 async function readWarnings(cwd: string, graph: SnitchGraph): Promise<SnitchWarning[]> {
@@ -5027,6 +5441,7 @@ async function persistAnalysisTarget(
     const session = await readSession(cwd);
     const updatedSession: SnitchSession = {
       ...session,
+      task,
       snapshotId,
       graphSource: "typescript",
       analysisTarget: storedTarget,
@@ -5837,9 +6252,10 @@ const commandSpecs: CommandSpec[] = [
     name: "watch",
     group: "daily",
     summary: "Serve the live dashboard data and refresh the graph as files change.",
-    usage: "snitch watch [--target <dir>] [--port <n>] [--insights] [--no-files]",
+    usage: "snitch watch [--target <dir>] [--base <ref>] [--port <n>] [--insights] [--no-files]",
     flags: [
       ["--target <dir>", "Directory to analyze (defaults to the stored target)"],
+      ["--base <ref>", "Git base ref for changed-file diff"],
       ["--port <n>", "HTTP port for the live server. Default: 4767"],
       ["--insights", "Refresh Cerebras/Backboard insight artifacts after graph refreshes"],
       ["--scan-interval <ms>", "File scan interval. Default: 600"],
@@ -5851,8 +6267,12 @@ const commandSpecs: CommandSpec[] = [
     name: "briefing",
     group: "daily",
     summary: "One-shot agent context: status, intent coverage, top action, changed surface.",
-    usage: "snitch briefing [--task \"<task>\"] [--json]",
-    flags: [["--task \"<task>\"", "Override the stored task"], ...commonFlags.slice(1)]
+    usage: "snitch briefing [--task \"<task>\"] [--base <ref>] [--json]",
+    flags: [
+      ["--task \"<task>\"", "Override the stored task"],
+      ["--base <ref>", "Git base ref for changed-file diff"],
+      ...commonFlags.slice(1)
+    ]
   },
   {
     name: "check",
@@ -5902,8 +6322,13 @@ const commandSpecs: CommandSpec[] = [
   {
     name: "changed",
     group: "evidence",
-    summary: "Focus active findings on the local Git changed files.",
-    usage: "snitch changed [--target <dir>] [--json]"
+    summary: "Focus active findings on files changed in the PR or worktree.",
+    usage: "snitch changed [--target <dir>] [--base <ref>] [--json]",
+    flags: [
+      ["--target <dir>", "Analysis target"],
+      ["--base <ref>", "Git base ref for PR diff, for example origin/main"],
+      ["--json", "Emit JSON"]
+    ]
   },
   {
     name: "findings",
@@ -5939,7 +6364,11 @@ const commandSpecs: CommandSpec[] = [
     name: "insights",
     group: "runtime",
     summary: "Write Cerebras narration/ranking and Backboard repo-rule artifacts.",
-    usage: "snitch insights [--offline]"
+    usage: "snitch insights [--base <ref>] [--offline]",
+    flags: [
+      ["--base <ref>", "Git base ref for changed-file diagram context"],
+      ["--offline", "Skip live integration calls"]
+    ]
   },
   {
     name: "event",

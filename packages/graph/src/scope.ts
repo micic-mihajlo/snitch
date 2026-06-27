@@ -6,14 +6,17 @@ export function scopeGraph(
   graph: SnitchGraph,
   diff: GraphDiff,
   scope: GraphScope,
-  selectedWarningId?: string
+  selectedWarningId?: string,
+  changedFilePaths: string[] = []
 ): SnitchGraph {
   if (scope === "all") {
     return graph;
   }
 
   const nodeIds = scope === "changed"
-    ? changedNodeIds(diff)
+    ? changedFilePaths.length > 0
+      ? changedFileNodeIds(graph, changedFilePaths)
+      : changedNodeIds(diff)
     : impactedNodeIds(graph, selectedWarningId);
 
   if (nodeIds.size === 0) {
@@ -33,6 +36,25 @@ export function scopeGraph(
   };
 }
 
+function changedFileNodeIds(graph: SnitchGraph, changedFilePaths: string[]): Set<string> {
+  const changedPaths = new Set(changedFilePaths.map(normalizePath));
+  const ids = new Set(
+    graph.nodes
+      .filter((node) => node.file && changedPaths.has(normalizePath(node.file)))
+      .map((node) => node.id)
+  );
+  const direct = new Set(ids);
+
+  for (const edge of graph.edges) {
+    if (direct.has(edge.from) || direct.has(edge.to)) {
+      ids.add(edge.from);
+      ids.add(edge.to);
+    }
+  }
+
+  return ids;
+}
+
 function changedNodeIds(diff: GraphDiff): Set<string> {
   const ids = new Set<string>();
 
@@ -50,6 +72,10 @@ function changedNodeIds(diff: GraphDiff): Set<string> {
   }
 
   return ids;
+}
+
+function normalizePath(path: string): string {
+  return path.replace(/\\/g, "/").replace(/^\.\//, "");
 }
 
 function impactedNodeIds(graph: SnitchGraph, selectedWarningId?: string): Set<string> {

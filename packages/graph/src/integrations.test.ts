@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   createCerebrasNarrationInput,
+  createCerebrasDiagramInput,
   createCerebrasWarningTriageInput,
   createFallbackWarningRankings,
   createStaticNarration,
+  diagramWithCerebras,
   diffGraph,
   getDemoReplay,
   getReviewSnapshot,
@@ -130,6 +132,86 @@ describe("Cerebras integration", () => {
     expect(input.messages[0].content).toContain("Return strict JSON only");
     expect(input.messages[1].content).toContain("\"rankedWarnings\"");
     expect(input.messages[1].content).toContain("No audit trail for external tool calls");
+  });
+
+  it("uses Cerebras to create a validated compact diagram graph", async () => {
+    const input = createCerebrasDiagramInput({
+      task: "Add the external issue-creation tool.",
+      graph: reviewSnapshot.graph,
+      warnings: reviewSnapshot.warnings,
+      repoRules: ["External tools require audit logging."],
+      changedFiles: [{ path: "apps/demo-app/src/tools/create-issue.ts", status: "M" }]
+    });
+    const result = await diagramWithCerebras({
+      apiKey: "test-key",
+      model: "zai-glm-4.7",
+      input,
+      graph: reviewSnapshot.graph,
+      warnings: reviewSnapshot.warnings,
+      fetcher: async () =>
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    title: "Issue tool path",
+                    summary: "The issue tool reaches GitHub without required safeguards.",
+                    nodes: [
+                      { id: "tool:create_issue", label: "Create issue" },
+                      { id: "external:issue_provider", label: "Issue provider" },
+                      { id: "warning:tool_audit_log_missing:create_issue", label: "Missing audit log" },
+                      { id: "invented:node", label: "Drop me" }
+                    ],
+                    edges: [
+                      { from: "tool:create_issue", to: "external:issue_provider", kind: "calls" },
+                      { from: "tool:create_issue", to: "warning:tool_audit_log_missing:create_issue", kind: "missing" },
+                      { from: "invented:node", to: "tool:create_issue", kind: "calls" }
+                    ]
+                  })
+                }
+              }
+            ]
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        )
+    });
+
+    expect(result.status).toBe("ok");
+    expect(result.model).toBe("zai-glm-4.7");
+    expect(result.summary).toContain("GitHub");
+    expect(result.graph.nodes.map((node) => node.id)).toEqual([
+      "tool:create_issue",
+      "external:issue_provider",
+      "warning:tool_audit_log_missing:create_issue"
+    ]);
+    expect(result.graph.edges.map((edge) => `${edge.from}->${edge.to}:${edge.kind}`)).toEqual([
+      "tool:create_issue->external:issue_provider:calls",
+      "tool:create_issue->warning:tool_audit_log_missing:create_issue:missing"
+    ]);
+  });
+
+  it("falls back to a deterministic warning diagram when Cerebras diagramming fails", async () => {
+    const input = createCerebrasDiagramInput({
+      task: "Add the external issue-creation tool.",
+      graph: reviewSnapshot.graph,
+      warnings: reviewSnapshot.warnings,
+      repoRules: []
+    });
+    const result = await diagramWithCerebras({
+      apiKey: "test-key",
+      model: "gpt-oss-120b",
+      input,
+      graph: reviewSnapshot.graph,
+      warnings: reviewSnapshot.warnings,
+      fetcher: async () => {
+        throw new Error("network offline");
+      }
+    });
+
+    expect(result.status).toBe("fallback");
+    expect(result.graph.nodes.some((node) => node.kind === "warning")).toBe(true);
+    expect(result.summary).toContain("active warning");
   });
 
   it("parses Cerebras warning ranking JSON and fills missing warnings with fallback ranks", async () => {

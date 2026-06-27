@@ -14,7 +14,7 @@ import { IntegrationPanel } from "./components/IntegrationPanel";
 import { Timeline } from "./components/Timeline";
 import { WarningRail } from "./components/WarningRail";
 import { scopeGraph, type GraphScope } from "./lib/graphScope";
-import { type RankedWarningView, useLiveSnitch } from "./lib/useLiveSnitch";
+import { type ChangedSurfaceView, type RankedWarningView, useLiveSnitch } from "./lib/useLiveSnitch";
 import { useReplay } from "./lib/useReplay";
 
 const task =
@@ -24,7 +24,7 @@ export default function App() {
   const replay = useReplay();
   const live = useLiveSnitch();
   const [createdAt] = useState(() => new Date().toISOString());
-  const [graphScope, setGraphScope] = useState<GraphScope>("all");
+  const [graphScope, setGraphScope] = useState<GraphScope>("diagram");
   const [selectedNodeId, setSelectedNodeId] = useState<string | undefined>(undefined);
   const currentSnapshot = live.snapshot ?? replay.currentSnapshot;
   const previousSnapshot = live.previousSnapshot ?? replay.previousSnapshot;
@@ -49,13 +49,16 @@ export default function App() {
     [currentSnapshot.graph.nodes]
   );
   const selectedNode = selectedNodeId ? nodeById.get(selectedNodeId) : undefined;
-  const selectedNodeEdges = useMemo(
-    () => edgesForNode(currentSnapshot.graph.edges, selectedNode?.id),
-    [currentSnapshot.graph.edges, selectedNode?.id]
-  );
   const diff = useMemo(
     () => diffGraph(previousSnapshot.graph, currentSnapshot.graph),
     [currentSnapshot, previousSnapshot]
+  );
+  const changedFilePaths = useMemo(
+    () =>
+      live.changed?.changedFiles.flatMap((file) =>
+        [file.targetPath, file.path].filter((path): path is string => Boolean(path))
+      ) ?? [],
+    [live.changed]
   );
   const artifacts = useMemo(
     () =>
@@ -81,18 +84,39 @@ export default function App() {
     memoryStatus: "not connected"
   };
   const scopedGraph = useMemo(
-    () => scopeGraph(currentSnapshot.graph, diff, graphScope, selectedWarning?.id),
-    [currentSnapshot.graph, diff, graphScope, selectedWarning?.id]
+    () => {
+      const scopeOptions: Parameters<typeof scopeGraph>[4] = {
+        changedFiles: changedFilePaths
+      };
+
+      if (live.diagram?.graph) {
+        scopeOptions.diagram = live.diagram.graph;
+      }
+
+      return scopeGraph(currentSnapshot.graph, diff, graphScope, selectedWarning?.id, scopeOptions);
+    },
+    [changedFilePaths, currentSnapshot.graph, diff, graphScope, live.diagram?.graph, selectedWarning?.id]
   );
   const scopedNodeIds = useMemo(
     () => new Set(scopedGraph.nodes.map((node) => node.id)),
     [scopedGraph.nodes]
+  );
+  const selectedNodeInScope = selectedNode && scopedNodeIds.has(selectedNode.id) ? selectedNode : undefined;
+  const selectedNodeEdges = useMemo(
+    () => edgesForNode(scopedGraph.edges, selectedNodeInScope?.id),
+    [scopedGraph.edges, selectedNodeInScope?.id]
   );
   const focusedNodeId = selectedNode && scopedNodeIds.has(selectedNode.id)
     ? selectedNode.id
     : selectedWarning && scopedNodeIds.has(selectedWarning.id)
       ? selectedWarning.id
       : undefined;
+  const graphFallbackWarning =
+    graphScope === "diagram" && live.changed?.counts.changedFindings === 0 ? undefined : selectedWarning;
+  const mapTitle = graphScope === "diagram" ? "Cerebras Diagram" : "Live System Map";
+  const mapMeter = graphScope === "diagram" && live.diagram
+    ? `${live.diagram.status}${live.diagram.model ? ` · ${live.diagram.model}` : ""} · ${scopedGraph.nodes.length} nodes`
+    : `${scopedGraph.nodes.length}/${currentSnapshot.graph.nodes.length} nodes · +${diff.summary.addedNodes} / +${diff.summary.addedEdges}`;
 
   useEffect(() => {
     if (!rankedWarnings.some((warning) => warning.id === selectedWarningId)) {
@@ -166,16 +190,31 @@ export default function App() {
         </div>
       </header>
 
+      <DailyBrief
+        task={live.task ?? task}
+        graphSourceLabel={live.graphSourceLabel}
+        graphNodeCount={currentSnapshot.graph.nodes.length}
+        graphEdgeCount={currentSnapshot.graph.edges.length}
+        warningCount={rankedWarnings.length}
+        highWarningCount={rankedWarnings.filter((warning) => warning.severity === "high").length}
+        changed={live.changed}
+        selectedWarning={selectedWarning}
+        diagramSummary={live.diagram?.summary}
+        narration={integrationPanel.narration}
+        cerebrasStatus={integrationPanel.cerebrasStatus}
+        backboardStatus={integrationPanel.backboardStatus}
+      />
+
       <section className="workspace-grid" aria-label="Snitch workspace">
         <section className="map-panel" aria-label="Live System Map">
           <div className="panel-heading">
             <div>
               <p className="eyebrow">Current graph</p>
-              <h2>Live System Map</h2>
+              <h2>{mapTitle}</h2>
             </div>
             <div className="map-tools">
               <div className="segmented-control" aria-label="Graph scope">
-                {(["all", "changed", "impacted"] as const).map((scope) => (
+                {(["diagram", "changed", "impacted", "all"] as const).map((scope) => (
                   <button
                     key={scope}
                     type="button"
@@ -188,11 +227,13 @@ export default function App() {
                 ))}
               </div>
               <output className="diff-meter">
-                {scopedGraph.nodes.length}/{currentSnapshot.graph.nodes.length} nodes · +
-                {diff.summary.addedNodes} / +{diff.summary.addedEdges}
+                {mapMeter}
               </output>
             </div>
           </div>
+          {graphScope === "diagram" && live.diagram ? (
+            <p className="diagram-summary">{live.diagram.summary}</p>
+          ) : null}
           <GraphCanvas
             graph={scopedGraph}
             selectedNodeId={focusedNodeId}
@@ -200,9 +241,9 @@ export default function App() {
             cwd={live.cwd}
           />
           <GraphSelectionStrip
-            node={selectedNode}
+            node={selectedNodeInScope}
             edges={selectedNodeEdges}
-            fallbackWarning={selectedWarning}
+            fallbackWarning={graphFallbackWarning}
             cwd={live.cwd}
           />
         </section>
@@ -231,6 +272,158 @@ export default function App() {
       </section>
     </main>
   );
+}
+
+function DailyBrief({
+  task,
+  graphSourceLabel,
+  graphNodeCount,
+  graphEdgeCount,
+  warningCount,
+  highWarningCount,
+  changed,
+  selectedWarning,
+  diagramSummary,
+  narration,
+  cerebrasStatus,
+  backboardStatus
+}: {
+  task: string;
+  graphSourceLabel: string;
+  graphNodeCount: number;
+  graphEdgeCount: number;
+  warningCount: number;
+  highWarningCount: number;
+  changed: ChangedSurfaceView | undefined;
+  selectedWarning: SnitchWarning | undefined;
+  diagramSummary: string | undefined;
+  narration: string;
+  cerebrasStatus: string;
+  backboardStatus: string;
+}) {
+  const changedLabel = changed
+    ? changed.git.available
+      ? `${changed.counts.changedFiles} changed / ${changed.counts.changedFindings} flagged`
+      : "Git unavailable"
+    : "No change data";
+  const targetLabel = changed?.target ?? graphSourceLabel;
+  const changedDetail = changed
+    ? changed.git.baseRef
+      ? `vs ${changed.git.baseRef}`
+      : changed.git.diffMode === "worktree"
+        ? "worktree status"
+        : targetLabel
+    : targetLabel;
+  const hasChangedFindings = Boolean(changed && changed.counts.changedFindings > 0);
+  const actionTitle = changed && changed.git.available && changed.counts.changedFindings === 0
+    ? "No findings on changed files"
+    : selectedWarning?.title ?? "No active warnings";
+  const topAction = changed && changed.git.available && changed.counts.changedFindings === 0
+    ? "The current PR diff has no active Snitch findings. Use the Diagram and Changed views for review; repo-wide warnings remain in the rail below."
+    : selectedWarning
+    ? warningActionText(selectedWarning)
+    : "No active warning selected.";
+  const warningDetail = changed?.git.available
+    ? `${changed.counts.changedFindings} on changed`
+    : `${highWarningCount} high`;
+  const summaryLines = compactNarration(diagramSummary ?? narration);
+
+  return (
+    <section className="daily-brief" aria-label="Daily Brief">
+      <div className="brief-title">
+        <p className="eyebrow">Daily brief</p>
+        <h2>Current PR sidecar</h2>
+        <p className="brief-task">{task}</p>
+      </div>
+
+      <div className="brief-metrics" aria-label="Run summary">
+        <BriefMetric label="Graph" value={`${graphNodeCount} nodes`} detail={`${graphEdgeCount} edges`} />
+        <BriefMetric label="Warnings" value={`${warningCount}`} detail={warningDetail} tone={hasChangedFindings ? "hot" : "clear"} />
+        <BriefMetric label="Changed" value={changedLabel} detail={changedDetail} tone={hasChangedFindings ? "hot" : "clear"} />
+      </div>
+
+      <ChangedFilesCard changed={changed} />
+
+      <div className="brief-action">
+        <p className="eyebrow">Next action</p>
+        <strong>{actionTitle}</strong>
+        <p>{topAction}</p>
+      </div>
+
+      <div className="brief-insight">
+        <div className="brief-insight-heading">
+          <span>Cerebras {cerebrasStatus}</span>
+          <span>Backboard {backboardStatus}</span>
+        </div>
+        {summaryLines.map((line) => (
+          <p key={line}>{line}</p>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function ChangedFilesCard({ changed }: { changed: ChangedSurfaceView | undefined }) {
+  const visibleFiles = changed?.changedFiles.slice(0, 5) ?? [];
+  const hiddenCount = changed ? Math.max(0, changed.changedFiles.length - visibleFiles.length) : 0;
+  const meta = changed
+    ? changed.git.available
+      ? changed.git.baseRef
+        ? `Against ${changed.git.baseRef}`
+        : "Worktree status"
+      : changed.git.error ?? "Git unavailable"
+    : "Waiting for live changed-file data";
+
+  return (
+    <div className="brief-change-list" role="region" aria-label="Changed files">
+      <div className="brief-change-heading">
+        <p className="eyebrow">Changed files</p>
+        <span>{meta}</span>
+      </div>
+      {visibleFiles.length > 0 ? (
+        <ul>
+          {visibleFiles.map((file) => (
+            <li key={`${file.status}:${file.path}`}>
+              <code>{file.status}</code>
+              <span>{file.path}</span>
+            </li>
+          ))}
+          {hiddenCount > 0 ? <li className="brief-more">+{hiddenCount} more</li> : null}
+        </ul>
+      ) : (
+        <p className="brief-empty">No changed files detected.</p>
+      )}
+    </div>
+  );
+}
+
+function BriefMetric({
+  label,
+  value,
+  detail,
+  tone
+}: {
+  label: string;
+  value: string;
+  detail: string;
+  tone?: "hot" | "clear";
+}) {
+  return (
+    <div className={["brief-metric", tone ? `brief-metric-${tone}` : ""].filter(Boolean).join(" ")}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+      <small>{detail}</small>
+    </div>
+  );
+}
+
+function compactNarration(narration: string): string[] {
+  const lines = narration
+    .split(/\n+/)
+    .map((line) => line.replace(/^[*\-\s]+/, "").replace(/\*\*/g, "").trim())
+    .filter(Boolean);
+
+  return (lines.length > 0 ? lines : ["No integration narration is available yet."]).slice(0, 4);
 }
 
 function edgesForNode(edges: GraphEdge[], nodeId: string | undefined): GraphEdge[] {
@@ -299,6 +492,10 @@ function GraphSelectionStrip({
 
 function kindLabel(kind: GraphNode["kind"]): string {
   return kind === "endpoint" ? "route" : kind;
+}
+
+function warningActionText(warning: SnitchWarning): string {
+  return warning.repairPrompt?.trim() || warning.message || "No repair instruction available.";
 }
 
 function editorHref(cwd: string | undefined, file: string | undefined, line: number | undefined): string | undefined {
