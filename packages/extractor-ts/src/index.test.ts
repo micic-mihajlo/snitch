@@ -265,9 +265,18 @@ describe("extractTypeScriptGraph", () => {
     expect(result.snapshot.warnings.map((warning) => warning.id)).toEqual(
       expect.arrayContaining([
         "warning:tool_audit_log_missing:create_issue",
-        "warning:secret_redaction_missing:create_issue"
+        "warning:secret_redaction_missing:create_issue",
+        "warning:tool_audit_log_missing:send_status",
+        "warning:secret_redaction_missing:send_status",
+        "warning:permission_scope_missing:send_status",
+        "warning:unauthorized_test_missing:send_status"
       ])
     );
+    const sendStatusAuditWarning = result.snapshot.warnings.find(
+      (warning) => warning.id === "warning:tool_audit_log_missing:send_status"
+    );
+
+    expect(sendStatusAuditWarning?.repairPrompt).toContain("send_status");
   });
 
   it("extracts database reads and writes from common TypeScript data clients", async () => {

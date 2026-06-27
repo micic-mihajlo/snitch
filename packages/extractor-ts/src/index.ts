@@ -688,58 +688,144 @@ function isAccessInActorRange(actor: GraphNode, access: GraphAccess): boolean {
 }
 
 function attachMissingCompanionWarnings(graph: MutableGraph): void {
-  if (!graph.nodes.has("tool:create_issue")) {
-    return;
+  const toolNodes = [...graph.nodes.values()].filter((node) => node.kind === "tool");
+
+  for (const tool of toolNodes) {
+    const externalCall = [...graph.edges.values()].find(
+      (edge) => edge.from === tool.id && edge.to.startsWith("external:") && edge.kind === "calls"
+    );
+
+    if (!externalCall) {
+      continue;
+    }
+
+    for (const warning of missingCompanionWarningsForTool(graph, tool, externalCall.to)) {
+      graph.warnings.push(warning);
+      addNode(graph, {
+        id: warning.id,
+        kind: "warning",
+        label: warning.title,
+        meta: {
+          severity: warning.severity,
+          evidence: warning.evidence
+        }
+      });
+      addEdge(graph, `edge:${warning.id}:missing`, tool.id, warning.id, "missing");
+    }
   }
+}
 
-  const externalCall = [...graph.edges.values()].find(
-    (edge) => edge.from === "tool:create_issue" && edge.to.startsWith("external:")
-  );
-
-  if (!externalCall) {
-    return;
-  }
-
-  const warningChecks = new Map<string, boolean>([
-    ["warning:tool_audit_log_missing:create_issue", graph.nodes.has("service:tool_audit_log")],
-    ["warning:secret_redaction_missing:create_issue", graph.nodes.has("service:secret_redactor")],
-    [
-      "warning:permission_scope_missing:create_issue",
-      graph.nodes.has("contract:issue_tool_permission_scope")
-    ],
-    [
-      "warning:unauthorized_test_missing:create_issue",
-      graph.nodes.has("test:issue_tool_rejects_unauthorized")
-    ]
+function missingCompanionWarningsForTool(
+  graph: MutableGraph,
+  tool: GraphNode,
+  externalNodeId: string
+): SnitchWarning[] {
+  const toolSlug = tool.id.replace(/^tool:/, "");
+  const canonicalWarnings = tool.id === "tool:create_issue"
+    ? createIssueWarnings(externalNodeId)
+    : createGenericToolWarnings(tool, externalNodeId);
+  const warningSatisfied = new Map<string, boolean>([
+    [`warning:tool_audit_log_missing:${toolSlug}`, graph.nodes.has("service:tool_audit_log")],
+    [`warning:secret_redaction_missing:${toolSlug}`, graph.nodes.has("service:secret_redactor")],
+    [`warning:permission_scope_missing:${toolSlug}`, hasPermissionScopeForTool(graph, toolSlug)],
+    [`warning:unauthorized_test_missing:${toolSlug}`, hasUnauthorizedTestForTool(graph, toolSlug)]
   ]);
 
-  for (const warning of createMissingCompanionWarnings().map((item) =>
+  return canonicalWarnings.filter((warning) => !warningSatisfied.get(warning.id));
+}
+
+function createIssueWarnings(externalNodeId: string): SnitchWarning[] {
+  return createMissingCompanionWarnings().map((item) =>
     item.id === "warning:tool_audit_log_missing:create_issue"
       ? {
           ...item,
           evidence: [
-            `tool:create_issue -> ${externalCall.to}`,
+            `tool:create_issue -> ${externalNodeId}`,
             "No service:tool_audit_log node satisfies this capability."
           ]
         }
       : item
-  )) {
-    if (warningChecks.get(warning.id)) {
-      continue;
-    }
+  );
+}
 
-    graph.warnings.push(warning);
-    addNode(graph, {
-      id: warning.id,
+function createGenericToolWarnings(tool: GraphNode, externalNodeId: string): SnitchWarning[] {
+  const toolSlug = tool.id.replace(/^tool:/, "");
+  const toolLabelText = tool.label;
+
+  return [
+    {
+      id: `warning:tool_audit_log_missing:${toolSlug}`,
       kind: "warning",
-      label: warning.title,
-      meta: {
-        severity: warning.severity,
-        evidence: warning.evidence
-      }
-    });
-    addEdge(graph, `edge:${warning.id}:missing`, "tool:create_issue", warning.id, "missing");
+      severity: "high",
+      title: `No audit trail for ${toolLabelText}`,
+      message: `${toolLabelText} calls an external system but no audit log node records the call.`,
+      evidence: [
+        `${tool.id} -> ${externalNodeId}`,
+        "No service:tool_audit_log node satisfies this capability."
+      ],
+      repairPrompt: `Add an audit log write around ${toolSlug} calls. Record caller, task/session id, external target, redacted payload summary, status, and timestamp.`
+    },
+    {
+      id: `warning:secret_redaction_missing:${toolSlug}`,
+      kind: "warning",
+      severity: "high",
+      title: `No redaction boundary for ${toolLabelText}`,
+      message: `${toolLabelText} sends data to an external system but no redaction service is connected to the tool boundary.`,
+      evidence: [
+        `${tool.id} -> ${externalNodeId}`,
+        `No service:secret_redactor node is connected to ${tool.id}.`
+      ],
+      repairPrompt: `Add a redaction boundary before ${toolSlug} writes audit records or returns external-provider errors to the agent transcript.`
+    },
+    {
+      id: `warning:permission_scope_missing:${toolSlug}`,
+      kind: "warning",
+      severity: "medium",
+      title: `No permission scope for ${toolLabelText}`,
+      message: `${toolLabelText} exposes an external capability without a scoped permission contract.`,
+      evidence: [
+        `${tool.id} calls ${externalNodeId}`,
+        `No contract node satisfies ${tool.id}.`
+      ],
+      repairPrompt: `Require a scoped permission grant before ${toolSlug} can call the external system. Tie the grant to this task or session.`
+    },
+    {
+      id: `warning:unauthorized_test_missing:${toolSlug}`,
+      kind: "warning",
+      severity: "medium",
+      title: `No unauthorized-call test for ${toolLabelText}`,
+      message: `The graph has no test proving ${toolLabelText} rejects unauthorized callers.`,
+      evidence: [
+        `${tool.id} has no covers edge from a test node`,
+        `Expected unauthorized-call coverage for ${tool.id}.`
+      ],
+      repairPrompt: `Add a test that calls ${toolSlug} without permission and asserts that no external request is made.`
+    }
+  ];
+}
+
+function hasPermissionScopeForTool(graph: MutableGraph, toolSlug: string): boolean {
+  if (toolSlug === "create_issue" && graph.nodes.has("contract:issue_tool_permission_scope")) {
+    return true;
   }
+
+  return [...graph.nodes.values()].some(
+    (node) =>
+      node.kind === "contract" &&
+      (node.id.includes(toolSlug) || String(node.meta?.symbol ?? "").toLowerCase().includes(toolSlug))
+  );
+}
+
+function hasUnauthorizedTestForTool(graph: MutableGraph, toolSlug: string): boolean {
+  if (toolSlug === "create_issue" && graph.nodes.has("test:issue_tool_rejects_unauthorized")) {
+    return true;
+  }
+
+  return [...graph.nodes.values()].some(
+    (node) =>
+      node.kind === "test" &&
+      (node.id.includes(toolSlug) || String(node.meta?.matcher ?? "").toLowerCase().includes(toolSlug))
+  );
 }
 
 function extractZodFields(variable: VariableDeclaration): string[] {
