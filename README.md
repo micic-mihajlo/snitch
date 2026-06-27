@@ -29,6 +29,7 @@ This repo now includes a working first slice:
 - PR publish bridge: `pnpm snitch publish-github` posts or updates one top-level GitHub PR comment from `.snitch/pr-comment.md`
 - dynamic PR and handoff summaries generated from the actual graph, not demo-only copy
 - scripted repair pass: `pnpm demo:repair` adds the missing companion work and regenerates warning-free artifacts
+- repeatable demo reset: `pnpm demo:reset` restores the unsafe agent-output state and regenerates warning artifacts
 - one-command live demo runner: `pnpm demo:live`
 - prepared demo assistant app under `apps/demo-app`
 - deterministic graph IR, hashing, diffing, and last-good-graph behavior
@@ -63,6 +64,7 @@ pnpm snitch repair-prompt --warning warning:permission_scope_missing:create_issu
 pnpm snitch watch --target apps/demo-app --port 4767 --scan-interval 300
 pnpm dev:live
 pnpm demo:live --offline-integrations
+pnpm demo:reset
 pnpm demo:repair
 pnpm snitch status
 pnpm snitch finalize

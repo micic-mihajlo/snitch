@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { applyDemoRepair } from "../../../scripts/apply-demo-repair";
+import { resetDemoApp } from "../../../scripts/reset-demo-app";
 import { extractTypeScriptGraph } from "./index";
 
 const demoRoot = resolve(import.meta.dirname, "../../../apps/demo-app");
@@ -83,6 +84,42 @@ describe("extractTypeScriptGraph", () => {
     );
     await expect(readFile(join(artifactsDir, "pr-comment.md"), "utf8")).resolves.toContain(
       "No active Snitch warnings."
+    );
+  });
+
+  it("resets the repaired demo app back to the unsafe warning state", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "snitch-reset-demo-"));
+    const demoCopy = join(tempRoot, "demo-app");
+    const artifactsDir = join(tempRoot, ".snitch");
+    tempDirs.push(tempRoot);
+    await cp(demoRoot, demoCopy, { recursive: true });
+
+    await applyDemoRepair({
+      target: demoCopy,
+      artifactsDir,
+      now: new Date("2026-06-27T12:00:00.000Z")
+    });
+    await resetDemoApp({
+      target: demoCopy,
+      artifactsDir,
+      now: new Date("2026-06-27T12:01:00.000Z")
+    });
+    const result = extractTypeScriptGraph({ cwd: demoCopy });
+    const nodeIds = result.snapshot.graph.nodes.map((node) => node.id);
+
+    expect(result.snapshot.warnings).toHaveLength(4);
+    expect(nodeIds).toEqual(
+      expect.arrayContaining([
+        "warning:tool_audit_log_missing:create_issue",
+        "warning:secret_redaction_missing:create_issue",
+        "warning:permission_scope_missing:create_issue",
+        "warning:unauthorized_test_missing:create_issue"
+      ])
+    );
+    expect(nodeIds).not.toContain("service:tool_audit_log");
+    expect(nodeIds).not.toContain("service:secret_redactor");
+    await expect(readFile(join(artifactsDir, "pr-comment.md"), "utf8")).resolves.toContain(
+      "Active warnings: 4"
     );
   });
 
